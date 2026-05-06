@@ -223,3 +223,4 @@ data/*
 reports/*
 .vscode
 *.DS_Store
+ignore
