@@ -24,35 +24,37 @@ def _():
     import numpy as np
     from typing import Iterable
     from dataclasses import dataclass
+    import uuid
+    import logging
 
     pymupdf.TOOLS.mupdf_display_errors(on = False)
     pymupdf.TOOLS.mupdf_display_warnings(on = False)
-    return Iterable, dataclass, mo, mpl, np, os, pd, plt, pymupdf, re
+    return (
+        Iterable,
+        dataclass,
+        logging,
+        mo,
+        mpl,
+        np,
+        os,
+        pd,
+        plt,
+        pymupdf,
+        re,
+        uuid,
+    )
 
 
 @app.cell
-def _(plt):
-    def plot_term_colours(terms):
-        _fig, (_ax1, _ax2) = plt.subplots(nrows=2, figsize = (5, 6))
-        for term in terms:
-            _ax1.plot([], [], label=' ', color=term.colour, linestyle=term.dash_ls if term.dash else None, marker = None, gapcolor=term.edgecolour)
-            _ax1.scatter([], [], color=term.colour, marker = term.marker, hatch=term.hatch, edgecolor=term.edgecolour, label=' ')
-        _ax1.legend(loc='center', ncols=len(terms), frameon=False, markerscale=1)
-        _ax1.axis('off')
+def _(COS, Iterable, dataclass, logging, os, pd, plt, search_files, uuid):
+    logger = logging.getLogger('analysis')
+    logger.setLevel(logging.DEBUG)
 
-        # pichart of all colours and hatches
-        _wedges, _ = _ax2.pie([1]*len(terms), labels=[term.alias for term in terms], colors=[term.colour for term in terms], hatch=[term.hatch for term in terms], rotatelabels=True)#, edgecolor=[term.edgecolour for term in terms], startangle=90)
-        for wedge, term in zip(_wedges, terms):
-            if term.edgecolour:
-                wedge.set_edgecolor(term.edgecolour)
-    
-        return _fig
+    logger_fh = logging.FileHandler(os.path.join('out', 'analysis.log'))
+    logger_fh.setLevel(logging.DEBUG)
+    logger_fh.set_name('analysis_debug')
+    logger_fh.setFormatter(logging.Formatter('%(asctime)s - %(levelname)s - %(message)s'))
 
-    return (plot_term_colours,)
-
-
-@app.cell
-def _(dataclass, plot_term_colours, plt):
     @dataclass
     class Term:
         alias: str
@@ -66,6 +68,106 @@ def _(dataclass, plot_term_colours, plt):
         edgecolour: str|None = None
         dash_ls = (0, (5, 10)) # custom dashed linestyle for terms with dash=True
 
+    class TermCollection:
+        def __init__(self, terms: Iterable[Term], folder_name: str):
+
+            # check that all aliases are unique
+            aliases = [term.alias for term in terms]
+            if len(aliases) != len(set(aliases)):
+                raise ValueError('All term aliases must be unique')
+
+            self.terms = list(terms)
+            self.folder_name = folder_name.replace(' ', '-').lower()
+            self.folder = os.path.join('out', self.folder_name)
+        
+            if not os.path.exists(self.folder):
+                os.makedirs(self.folder)
+                with open(os.path.join(self.folder, 'terms.txt'), 'w') as f:
+                    for term in self.terms:
+                        f.write(f'{term.alias}: {term.regex}\n')
+
+            self.uuid = uuid.uuid5(uuid.NIL, ''.join([term.alias + term.regex for term in self.terms])).hex
+
+            self.log('CREATED')
+
+        def __iter__(self):
+            return iter(self.terms)
+    
+        def __getitem__(self, key: str|int):
+            if isinstance(key, int):
+                return self.terms[key]
+            for term in self.terms:
+                if term.alias == key:
+                    return term
+                if term.alias.lower() == key.lower():
+                    return term
+            raise KeyError(f'Term with alias {key} not found')
+    
+        def __len__(self):
+            return len(self.terms)
+
+        def plot_colours(self):
+            _fig, (_ax1, _ax2) = plt.subplots(nrows=2, figsize = (5, 6))
+            for term in self.terms:
+                _ax1.plot([], [], label=' ', color=term.colour, linestyle=term.dash_ls if term.dash else None, marker = None, gapcolor=term.edgecolour)
+                _ax1.scatter([], [], color=term.colour, marker = term.marker, hatch=term.hatch, edgecolor=term.edgecolour, label=' ')
+            _ax1.legend(loc='center', ncols=len(self.terms), frameon=False, markerscale=1)
+            _ax1.axis('off')
+
+            # pichart of all colours and hatches
+            _wedges, _ = _ax2.pie([1]*len(self.terms), labels=[term.alias for term in self.terms], colors=[term.colour for term in self.terms], hatch=[term.hatch for term in self.terms], rotatelabels=True)#, edgecolor=[term.edgecolour for term in self.terms], startangle=90)
+            for wedge, term in zip(_wedges, self.terms):
+                if term.edgecolour:
+                    wedge.set_edgecolor(term.edgecolour)
+
+            return _fig
+    
+        def run_pipeline(self, 
+                        count_type: str = 'all', norm_type: str = 'words',
+                        reprocess: bool = False, save_csv: bool = False):
+
+            report_types = {'annual': 'an', 'sustainability-report': 'sr'}
+
+            dfs = {}
+            dfs_unnormed = {}
+
+            if not os.path.exists('out/mentions'):
+                os.makedirs('out/mentions')
+            if not os.path.exists('out/mentions-unnormed'):
+                os.makedirs('out/mentions-unnormed')
+
+            normed_f = lambda co, rt: f'out/mentions/{co}-{report_types[rt]}.csv'
+            unnormed_f = lambda co, rt: f'out/mentions-unnormed/{co}-{report_types[rt]}.csv'
+
+            for co in COS:
+                for report_type in report_types:
+                    folder = os.path.join('reports', co, report_type)
+
+                    if reprocess or not os.path.exists(normed_f(co, report_type)):
+                        dfs[f'{co}-{report_types[report_type]}'] = search_files(folder, self.terms, norm=True, norm_type=self.norm_type, count_type=self.count_type, year_index=True)
+                        if save_csv:
+                            dfs[f'{co}-{report_types[report_type]}'].to_csv(normed_f(co, report_type))
+                    else:
+                        dfs[f'{co}-{report_types[report_type]}'] = pd.read_csv(normed_f(co, report_type), index_col=0)
+
+                    if reprocess or not os.path.exists(unnormed_f(co, report_type)):
+                        dfs_unnormed[f'{co}-{report_types[report_type]}'] = search_files(folder, self.terms, norm=False, norm_type=None, count_type=self.count_type, year_index=True)
+                        if save_csv:
+                            dfs_unnormed[f'{co}-{report_types[report_type]}'].to_csv(unnormed_f(co, report_type))
+                    else:
+                        dfs_unnormed[f'{co}-{report_types[report_type]}'] = pd.read_csv(unnormed_f(co, report_type), index_col=0)
+
+            return dfs, dfs_unnormed
+    
+        def _log(self, message:str):
+            logger.debug(f'{self.uuid}: {message}')
+
+
+    return Term, TermCollection
+
+
+@app.cell
+def _(Term, TermCollection, plt):
     SOLAR_REGEX = r'''\b(solar\s+(power|energy|farm|park|plant|panel|cell|module|PV|photovoltaic|thermal|roof|rooftop|capacity|generation|project|investment|asset|portfolio|array|system|technology)|
     photovoltaic(?!s?\s+effect)|
     \bPV\b(?=\s+(power|energy|farm|park|plant|panel|capacity|generation|project|asset|portfolio|array|system))|
@@ -132,7 +234,7 @@ def _(dataclass, plot_term_colours, plt):
     carbon\s+storage\s+(hub|cluster|facility|site|reservoir)|
     saline\s+(aquifer|formation)\s+(storage|injection))'''.replace('\n', '')
 
-    BIOENERGY_REGEX = r'''\b(biofuel|
+    BIOFUEL_REGEX = r'''\b(biofuel|
     biodiesel|
     bioethanol|
     bio.jet(\s+fuel)?|
@@ -309,23 +411,106 @@ def _(dataclass, plot_term_colours, plt):
     fusion\s+pilot\s+plant|
     \bFPP\b(?=\s+(fusion|project|programme|investment)))'''.replace('\n', '')
 
-    TERMS = [
+    TERMS = TermCollection(
+        [
+              Term('Solar', SOLAR_REGEX, 
+                   'gold'),
+              Term('Wind', WIND_REGEX, 
+                   'powderblue'),
+              Term('Hydrogen (green)', GREEN_HYDROGEN_REGEX, 
+                   'turquoise', dash=True, edgecolour='chartreuse', hatch='....'),
+              Term('Hydrogen (blue)', BLUE_HYDROGEN_REGEX, 
+                   'turquoise', dash=True, edgecolour='blue', hatch='....'),
+              Term('Hydrogen', HYDROGEN_REGEX, 
+                   'turquoise'),
+              Term('CCS', CCS_REGEX, 
+                   'dimgray'),
+              Term('Biofuel', BIOFUEL_REGEX, 
+                   'tab:brown', dash=True, edgecolour='peru', hatch='....'),
+              Term('Biogas', BIOGAS_REGEX, 
+                   'tab:brown', dash=True, edgecolour='lightgrey', hatch='....'),
+              Term('Geothermal', GEOTHERMAL_REGEX, 
+                   'tab:red'),
+              Term('Tidal', TIDAL_REGEX, 
+                   'steelblue'),
+
+              Term('Storage', STORAGE_REGEX, 
+                   'pink'),
+              Term('EVs', EVS_REGEX, 
+                   'lightgrey'),
+              Term('Nature', NATURE_REGEX, 
+                   'darkgreen'),
+              Term('Efficiency', EFFICIENCY_REGEX, 
+                   'fuchsia'),
+
+              Term('Nuclear (conventional)', NUCLEAR_CONVENTIONAL_REGEX, 
+                   'tab:olive'),
+              Term('Nuclear (SMR)', NUCLEAR_SMR_REGEX, 
+                   'tab:olive', dash=True, edgecolour='tab:grey', hatch='....'),
+              Term('Nuclear fusion', NUCLEAR_FUSION_REGEX, 
+                   'tab:olive', dash=True, edgecolour='gold', hatch='....'),
+         ],
+         folder_name='all-terms'
+    )
+
+    TERMS.plot_colours()
+    plt.show()
+    return (
+        BIOFUEL_REGEX,
+        BIOGAS_REGEX,
+        BLUE_HYDROGEN_REGEX,
+        CCS_REGEX,
+        EFFICIENCY_REGEX,
+        EVS_REGEX,
+        GEOTHERMAL_REGEX,
+        GREEN_HYDROGEN_REGEX,
+        HYDROGEN_REGEX,
+        NATURE_REGEX,
+        NUCLEAR_CONVENTIONAL_REGEX,
+        NUCLEAR_FUSION_REGEX,
+        NUCLEAR_SMR_REGEX,
+        SOLAR_REGEX,
+        STORAGE_REGEX,
+        TERMS,
+        TIDAL_REGEX,
+        WIND_REGEX,
+    )
+
+
+@app.cell
+def _(
+    BIOFUEL_REGEX,
+    BIOGAS_REGEX,
+    BLUE_HYDROGEN_REGEX,
+    CCS_REGEX,
+    EFFICIENCY_REGEX,
+    EVS_REGEX,
+    GEOTHERMAL_REGEX,
+    GREEN_HYDROGEN_REGEX,
+    HYDROGEN_REGEX,
+    NATURE_REGEX,
+    NUCLEAR_CONVENTIONAL_REGEX,
+    NUCLEAR_FUSION_REGEX,
+    NUCLEAR_SMR_REGEX,
+    SOLAR_REGEX,
+    STORAGE_REGEX,
+    TIDAL_REGEX,
+    Term,
+    TermCollection,
+    WIND_REGEX,
+    plt,
+):
+    TERMS_SUMMARY = TermCollection([
         Term('Solar', SOLAR_REGEX, 
              'gold'),
         Term('Wind', WIND_REGEX, 
              'powderblue'),
-        Term('Hydrogen (green)', GREEN_HYDROGEN_REGEX, 
-             'turquoise', dash=True, edgecolour='chartreuse', hatch='....'),
-        Term('Hydrogen (blue)', BLUE_HYDROGEN_REGEX, 
-             'turquoise', dash=True, edgecolour='blue', hatch='....'),
-        Term('Hydrogen', HYDROGEN_REGEX, 
+        Term('Hydrogen', f'{GREEN_HYDROGEN_REGEX}|{BLUE_HYDROGEN_REGEX}|{HYDROGEN_REGEX}', 
              'turquoise'),
         Term('CCS', CCS_REGEX, 
              'dimgray'),
-        Term('Biofuel', BIOENERGY_REGEX, 
-             'tab:brown', dash=True, edgecolour='peru', hatch='....'),
-        Term('Biogas', BIOGAS_REGEX, 
-             'tab:brown', dash=True, edgecolour='lightgrey', hatch='....'),
+        Term('Bioenergy', f'{BIOFUEL_REGEX}|{BIOGAS_REGEX}', 
+             'tab:brown'),
         Term('Geothermal', GEOTHERMAL_REGEX, 
              'tab:red'),
         Term('Tidal', TIDAL_REGEX, 
@@ -340,17 +525,40 @@ def _(dataclass, plot_term_colours, plt):
         Term('Efficiency', EFFICIENCY_REGEX, 
              'fuchsia'),
 
-        Term('Nuclear (conventional)', NUCLEAR_CONVENTIONAL_REGEX, 
+        Term('Nuclear', f'{NUCLEAR_CONVENTIONAL_REGEX}|{NUCLEAR_SMR_REGEX}', 
              'tab:olive'),
-        Term('Nuclear (SMR)', NUCLEAR_SMR_REGEX, 
-             'tab:olive', dash=True, edgecolour='tab:grey', hatch='....'),
-        Term('Nuclear fusion', NUCLEAR_FUSION_REGEX, 
+        Term('Fusion', NUCLEAR_FUSION_REGEX, 
              'tab:olive', dash=True, edgecolour='gold', hatch='....'),
-    ]
+    ], folder_name='summary-terms')
 
-    plot_term_colours(TERMS)
+    TERMS_SUMMARY.plot_colours()
     plt.show()
-    return TERMS, Term
+    return (TERMS_SUMMARY,)
+
+
+@app.cell
+def _(dataclass, os):
+    @dataclass
+    class Company:
+        foldername: str
+        alias: str
+
+        @property
+        def fpaths(self) -> dict[str, dict[str, str]]:
+            report_types = ('an', 'sr')
+            return {'normed': {report_type: os.path.join('out', 'mentions-normed', f'{self.foldername}-{report_type}.csv') for report_type in report_types},
+                    'unnormed': {report_type: os.path.join('out', 'mentions', f'{self.foldername}-{report_type}.csv') for report_type in report_types}}
+
+    company_aliases = {
+            'shell': 'Shell',
+            'bp': 'BP',
+            'exxon': 'ExxonMobil',
+            'chevron': 'Chevron',
+            'total': 'TotalEnergies'
+        }
+
+    COS = [Company(co, alias) for co, alias in company_aliases.items()]
+    return COS, company_aliases
 
 
 @app.cell(hide_code=True)
@@ -402,7 +610,7 @@ def _(Iterable, TERMS, Term, pymupdf, re):
                 out = {term: out[term]/n_words for term in out}
             else:
                 raise ValueError(f'Invalid norm_type: {norm_type}. Must be "pages" or "words".')
-    
+
         out['n_words'] = n_words
         out['n_pages'] = n_pages
 
@@ -451,7 +659,7 @@ def _(Iterable, TERMS, Term, os, pd, re, search_file):
 
 
 @app.cell
-def _(Iterable, TERMS, Term, mpl, np, pd, plt):
+def _(COS, Iterable, TERMS, Term, company_aliases, mpl, np, pd, plt):
     def plot_mentions(
         df: pd.DataFrame, 
         *, 
@@ -465,7 +673,7 @@ def _(Iterable, TERMS, Term, mpl, np, pd, plt):
 
         for term in terms:
             ax.plot(df.index, df[term.alias], marker = marker, linestyle = term.dash_ls if term.dash else None, color = term.colour, gapcolor=term.edgecolour)
-    
+
         if normed_by is not None:
             ax.set_ylabel(f'Term count/No. {normed_by}')
         else:
@@ -498,7 +706,7 @@ def _(Iterable, TERMS, Term, mpl, np, pd, plt):
         elif zero_fill.lower() == 'min':
             min_rank = df_ranked[df_ranked > 0].min().min()
             df_ranked = df_ranked.replace(0, min_rank + 1)
-    
+
         df_ranked = df_ranked.rank(ascending=False, method='min', axis=1)
 
         for term in terms:
@@ -519,20 +727,13 @@ def _(Iterable, TERMS, Term, mpl, np, pd, plt):
 
     def plot_companies(
         dfs: dict[str, pd.DataFrame], 
-        cos: Iterable[str], 
         terms: Iterable[Term] = TERMS, *,
+        cos: Iterable[str] = COS, 
         rank: bool = False,
         rank_zero_fill: str = 'nan', rank_lines: bool = True,
         plot_n: str|None = 'words', normed_by: str|None = 'words',
         suptitle: str|None = None
     ):
-        company_aliases = {
-            'shell': 'Shell',
-            'bp': 'BP',
-            'exxon': 'ExxonMobil',
-            'chevron': 'Chevron',
-            'total': 'TotalEnergies'
-        }
 
         years_an = sorted({int(y) for co in cos for y in dfs[co + '-an'].index})
         years_sr = sorted({int(y) for co in cos for y in dfs[co + '-sr'].index})
@@ -625,46 +826,51 @@ def _(mo):
 
 
 @app.cell
-def _(os, pd, search_files):
-    REPROCESS = False
+def _(COS, Iterable, TERMS_SUMMARY, Term, os, pd, search_files):
+    def run_pipeline(terms: Iterable[Term], *, 
+                     count_type: str = 'all', norm_type: str = 'words',
+                     reprocess: bool = False, save_csv: bool = False):
 
-    cos = os.listdir('reports')
-    if '.DS_Store' in cos: cos.remove('.DS_Store')
-    report_types = {'annual': 'an', 'sustainability-report': 'sr'}
+        report_types = {'annual': 'an', 'sustainability-report': 'sr'}
 
-    dfs = {}
-    dfs_unnormed = {}
+        dfs = {}
+        dfs_unnormed = {}
 
-    if not os.path.exists('out/mentions'):
-        os.makedirs('out/mentions')
-    if not os.path.exists('out/mentions-unnormed'):
-        os.makedirs('out/mentions-unnormed')
+        if not os.path.exists('out/mentions'):
+            os.makedirs('out/mentions')
+        if not os.path.exists('out/mentions-unnormed'):
+            os.makedirs('out/mentions-unnormed')
 
-    normed_f = lambda co, rt: f'out/mentions/{co}-{report_types[rt]}.csv'
-    unnormed_f = lambda co, rt: f'out/mentions-unnormed/{co}-{report_types[rt]}.csv'
+        normed_f = lambda co, rt: f'out/mentions/{co}-{report_types[rt]}.csv'
+        unnormed_f = lambda co, rt: f'out/mentions-unnormed/{co}-{report_types[rt]}.csv'
 
-    for co in cos:
-        for report_type in report_types:
-            folder = os.path.join('reports', co, report_type)
-        
-            if REPROCESS or not os.path.exists(normed_f(co, report_type)):
-                dfs[f'{co}-{report_types[report_type]}'] = search_files(folder, norm=True, norm_type='words')
-                dfs[f'{co}-{report_types[report_type]}'].to_csv(normed_f(co, report_type))
-            else:
-                dfs[f'{co}-{report_types[report_type]}'] = pd.read_csv(normed_f(co, report_type), index_col=0)
-        
-            if REPROCESS or not os.path.exists(unnormed_f(co, report_type)):
-                dfs_unnormed[f'{co}-{report_types[report_type]}'] = search_files(folder, norm=False, norm_type=None)
-                dfs_unnormed[f'{co}-{report_types[report_type]}'].to_csv(unnormed_f(co, report_type))
-            else:
-                dfs_unnormed[f'{co}-{report_types[report_type]}'] = pd.read_csv(unnormed_f(co, report_type), index_col=0)
-    return cos, dfs, dfs_unnormed
+        for co in COS:
+            for report_type in report_types:
+                folder = os.path.join('reports', co, report_type)
+
+                if reprocess or not os.path.exists(normed_f(co, report_type)):
+                    dfs[f'{co}-{report_types[report_type]}'] = search_files(folder, terms, norm=True, norm_type=norm_type, count_type=count_type, year_index=True)
+                    if save_csv:
+                        dfs[f'{co}-{report_types[report_type]}'].to_csv(normed_f(co, report_type))
+                else:
+                    dfs[f'{co}-{report_types[report_type]}'] = pd.read_csv(normed_f(co, report_type), index_col=0)
+
+                if reprocess or not os.path.exists(unnormed_f(co, report_type)):
+                    dfs_unnormed[f'{co}-{report_types[report_type]}'] = search_files(folder, terms, norm=False, norm_type=None, count_type=count_type, year_index=True)
+                    if save_csv:
+                        dfs_unnormed[f'{co}-{report_types[report_type]}'].to_csv(unnormed_f(co, report_type))
+                else:
+                    dfs_unnormed[f'{co}-{report_types[report_type]}'] = pd.read_csv(unnormed_f(co, report_type), index_col=0)
+
+        return dfs, dfs_unnormed
+
+    dfs, dfs_unnormed = run_pipeline(TERMS_SUMMARY, reprocess = True, save_csv = False)
+    return dfs, dfs_unnormed
 
 
 @app.cell
-def _(TERMS, cos, dfs, plot_companies, plt):
-    plot_companies(dfs, cos, terms = TERMS, plot_rank=False, plot_n='words', normed_by='words', 
-                   suptitle='Technology mentions - normalised by word count')
+def _(dfs, plot_companies, plt):
+    plot_companies(dfs, suptitle='Technology mentions - normalised by word count')
 
     plt.savefig('out/company_mentions.png', bbox_inches='tight', dpi=300)
     plt.show()
@@ -672,8 +878,8 @@ def _(TERMS, cos, dfs, plot_companies, plt):
 
 
 @app.cell
-def _(cos, dfs_unnormed, plot_companies, plt):
-    plot_companies(dfs_unnormed, cos, normed_by=None,
+def _(COS, dfs_unnormed, plot_companies, plt):
+    plot_companies(dfs_unnormed, COS, normed_by=None,
                    suptitle='Technology mentions - unnormalised')
     plt.savefig('out/company_mentions_unnormed.png', bbox_inches='tight', dpi=300)
     plt.show()
@@ -681,15 +887,11 @@ def _(cos, dfs_unnormed, plot_companies, plt):
 
 
 @app.cell
-def _(cos, dfs_unnormed, plot_companies, plt):
-    plot_companies(dfs_unnormed, cos, rank=True)
+def _(COS, dfs_unnormed, plot_companies, plt):
+    plot_companies(dfs_unnormed, COS, rank=True,
+                   suptitle='Technology mention rankings')
     plt.savefig('out/company_mentions_rankings.png', bbox_inches='tight', dpi=300)
     plt.show()
-    return
-
-
-@app.cell
-def _():
     return
 
 
