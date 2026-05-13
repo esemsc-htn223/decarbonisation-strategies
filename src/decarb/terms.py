@@ -1,4 +1,4 @@
-__all__ = ['Term', 'TermCollection', 'ALL_TERMS', 'TERMS_SUMMARY']
+__all__ = ['Term', 'TermCollection', 'TERMS_ALL', 'TERMS_SUMMARY', 'TERMS_SIMPLE']
 
 import pandas as pd
 import os
@@ -331,7 +331,7 @@ private\s+fusion\s+(company|venture|investment|start.?up)|
 fusion\s+pilot\s+plant|
 \bFPP\b(?=\s+(fusion|project|programme|investment)))'''.replace('\n', '')
 
-ALL_TERMS = TermCollection(
+TERMS_ALL = TermCollection(
     [
           Term('Solar', SOLAR_REGEX, 
                'gold'),
@@ -405,4 +405,38 @@ TERMS_SUMMARY = TermCollection(
             'tab:olive', dash=True, edgecolour='gold', hatch='....'),
     ], 
     folder_name='summary-terms'
+)
+
+TERMS_SIMPLE = TermCollection(
+    [
+        Term('Solar', r'solar|\bPV\b|\bP\.V\.\b|photovoltaic|\bCSP\b|\bC\.S\.P\.\b', 
+             'gold'),
+        Term('Wind', r'\bwind\b', 
+             'powderblue'),
+        Term('Hydrogen', r'hydrogen|h2', 
+             'turquoise'),
+        Term('CCS', r'(carbon\s+capture(\s+and\s+(storage|sequestration|utili[sz]ation))|ccs)', 
+             'dimgray'),
+        Term('Biofuel', 'biofuel|biodiesel|bioethanol', 
+             'tab:brown', dash=True, hatch = '....', edgecolour='peru'),
+        Term('Biogas', r'biomethane|renewable\s+natural\s+gas|\bRNG\b|\bR\.N\.G\.\b|biogas', 
+             'tab:brown', dash=True, hatch = '....', edgecolour='lightgrey'),
+        Term('Geothermal', r'geothermal|ground\.source|ground\s+source', 
+             'tab:red'),
+        Term('Tidal', r'tidal|wave', 
+             'steelblue'),
+        Term('Storage', r'\b(batter(y|ies)|BESS|B\.E\.S\.S\.|compressed\s+air|CAES|C\.A\.E\.S\.)\b', 
+             'pink'),
+        Term('EVs', r'\b(electric\s+vehicle|EV|E\.V\.)s?\b', 
+             'lightgrey'),
+        Term('Nature', r'\b(nature.based|nature\s+based|(re|a)forestation)\b', 
+             'darkgreen'),
+        Term('Nuclear (conventional)', r'nuclear\s+(power|plants?|energy|reactor|fleet|fission)', 
+             'tab:olive'),
+        Term('Nuclear (SMR)', r'\b((small|advanced)\s+modular\s+reactor)\b', 
+             'tab:olive', dash=True, hatch = '....', edgecolour='tab:grey'),
+        Term('Nuclear fusion', r'nuclear\s+fusion|fusion\s+(energy|power|reactor|plant|research)', 
+             'tab:olive', dash=True, hatch = '....', edgecolour='gold')
+    ],
+    folder_name = 'simple-terms'
 )

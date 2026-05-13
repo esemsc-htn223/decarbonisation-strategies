@@ -4,7 +4,7 @@ import matplotlib as mpl
 import numpy as np
 from typing import Iterable
 
-from .terms import Term, TermCollection, ALL_TERMS
+from .terms import Term, TermCollection, TERMS_ALL
 from .companies import Company, COS
 
 def plot_mentions(
@@ -12,7 +12,7 @@ def plot_mentions(
     *, 
     ax: plt.Axes | None = None, figsize: tuple[float]|tuple[int]|None = None,
     plot_n: str|None = 'words', normed_by: str|None = 'words',
-    terms: TermCollection = ALL_TERMS
+    terms: TermCollection = TERMS_ALL
 ):
 
     if ax is None: _, ax = plt.subplots(figsize=figsize)
@@ -40,7 +40,7 @@ def plot_rankings(
         *,
         ax: plt.Axes | None = None,
         figsize: tuple[float]|tuple[int]|None = None,
-        terms: TermCollection = ALL_TERMS,
+        terms: TermCollection = TERMS_ALL,
         lines: bool = True,
         zero_fill: str = 'nan'  # 'nan' or 'min' (fills with min rank + 1). ignored otherwise
 ):
@@ -73,7 +73,7 @@ def plot_rankings(
 
 def plot_comparison(
     dfs: dict[str, pd.DataFrame], 
-    terms: TermCollection = ALL_TERMS, *,
+    terms: TermCollection = TERMS_ALL, *,
     cos: Iterable[Company] = COS, 
     rank: bool = False,
     rank_zero_fill: str = 'nan', rank_lines: bool = True,

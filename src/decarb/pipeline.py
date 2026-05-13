@@ -6,7 +6,7 @@ import os
 import pymupdf
 from typing import Iterable
 
-from .terms import TermCollection, ALL_TERMS
+from .terms import TermCollection, TERMS_ALL
 from .companies import Company
 from .plotting import plot_mentions, plot_rankings, plot_comparison
 
@@ -15,7 +15,7 @@ pymupdf.TOOLS.mupdf_display_warnings(on = False)
 
 def search_file(
     file:str|pymupdf.Document, 
-    terms: TermCollection = ALL_TERMS, 
+    terms: TermCollection = TERMS_ALL, 
     *, 
     count_type: str = 'all', norm_type: str = 'words', norm:bool = True
 ) -> dict[str, int] | dict[str, int | float]:
@@ -70,7 +70,7 @@ def extract_year(filename: str) -> int:
 
 def search_files(
     folder:str, 
-    terms: TermCollection = ALL_TERMS, 
+    terms: TermCollection = TERMS_ALL, 
     *,
     count_type:str = 'all', norm: bool = True,
     year_index: bool = True,
