@@ -89,6 +89,8 @@ def plot_comparison(
 
 
     fig, axs = plt.subplots(len(cos), 2, figsize = (12, 3*len(cos) + 1))
+    if len(cos) == 1:
+        axs = np.array([axs])
     for i, co in enumerate(cos):
         axs1 = axs[i][0]
         axs2 = axs[i][1]
