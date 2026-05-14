@@ -8,7 +8,7 @@ from typing import Iterable
 
 from .terms import TermCollection, TERMS_ALL
 from .companies import Company
-from .plotting import plot_mentions, plot_rankings, plot_comparison
+from .plotting import plot_comparison
 
 pymupdf.TOOLS.mupdf_display_errors(on = False)
 pymupdf.TOOLS.mupdf_display_warnings(on = False)
@@ -93,8 +93,8 @@ def search_files(
 
 def run_pipeline(terms: TermCollection, cos: Iterable[Company], *, 
                  count_type: str = 'all', norm_type: str = 'words',
-                 reprocess: bool = False, save_csv: bool = False,
-                 plot: bool = False, save_plots: bool = False,
+                 reprocess: bool = False, save_csv: bool = True,
+                 plot: bool = False, save_plots: bool = True,
                  plot_rank_zero_fill: str = 'nan', plot_rank_lines: bool = True,
                  plot_n: bool = True, plot_normed_by: str|None = 'words'):
         
@@ -114,24 +114,24 @@ def run_pipeline(terms: TermCollection, cos: Iterable[Company], *,
 
         for co in cos:
             for report_type in report_types:
-                folder = os.path.join('reports', co.foldername, report_type)
+                reports_folder = os.path.join(co.folder, report_type)
 
-                normed_f = os.path.join(terms.folder, 'mentions', f'{co.foldername}-{report_types[report_type]}.csv')
-                unnormed_f = os.path.join(terms.folder, 'mentions-unnormed', f'{co.foldername}-{report_types[report_type]}.csv')
+                out_fname_normed = os.path.join(terms.folder, 'mentions', f'{co.foldername}-{report_types[report_type]}.csv')
+                out_fname_unnormed = os.path.join(terms.folder, 'mentions-unnormed', f'{co.foldername}-{report_types[report_type]}.csv')
 
-                if reprocess or not os.path.exists(normed_f):
-                    dfs[f'{co.foldername}-{report_types[report_type]}'] = search_files(folder, terms.terms, norm=True, norm_type=norm_type, count_type=count_type, year_index=True)
+                if reprocess or not os.path.exists(out_fname_normed):
+                    dfs[f'{co.foldername}-{report_types[report_type]}'] = search_files(reports_folder, terms.terms, norm=True, norm_type=norm_type, count_type=count_type, year_index=True)
                     if save_csv:
-                        dfs[f'{co.foldername}-{report_types[report_type]}'].to_csv(normed_f)
+                        dfs[f'{co.foldername}-{report_types[report_type]}'].to_csv(out_fname_normed)
                 else:
-                    dfs[f'{co.foldername}-{report_types[report_type]}'] = pd.read_csv(normed_f, index_col=0)
+                    dfs[f'{co.foldername}-{report_types[report_type]}'] = pd.read_csv(out_fname_normed, index_col=0)
 
-                if reprocess or not os.path.exists(unnormed_f):
-                    dfs_unnormed[f'{co.foldername}-{report_types[report_type]}'] = search_files(folder, terms.terms, norm=False, norm_type=None, count_type=count_type, year_index=True)
+                if reprocess or not os.path.exists(out_fname_unnormed):
+                    dfs_unnormed[f'{co.foldername}-{report_types[report_type]}'] = search_files(reports_folder, terms.terms, norm=False, norm_type=None, count_type=count_type, year_index=True)
                     if save_csv:
-                        dfs_unnormed[f'{co.foldername}-{report_types[report_type]}'].to_csv(unnormed_f)
+                        dfs_unnormed[f'{co.foldername}-{report_types[report_type]}'].to_csv(out_fname_unnormed)
                 else:
-                    dfs_unnormed[f'{co.foldername}-{report_types[report_type]}'] = pd.read_csv(unnormed_f, index_col=0)
+                    dfs_unnormed[f'{co.foldername}-{report_types[report_type]}'] = pd.read_csv(out_fname_unnormed, index_col=0)
 
         out['dfs'] = dfs
         out['dfs_unnormed'] = dfs_unnormed
@@ -142,17 +142,20 @@ def run_pipeline(terms: TermCollection, cos: Iterable[Company], *,
             plot_n = norm_type if plot_n else None
             fig_m, _ = plot_comparison(dfs, terms, cos=cos, plot_n=plot_n, normed_by=plot_normed_by, 
                                      suptitle=f'Mentions of Technologies (Normalised by No. {norm_type.capitalize()})')
-            fig_m.savefig(os.path.join(terms.folder, 'plots', 'mentions.png'), bbox_inches='tight', dpi = 300)
+            if save_plots:
+                fig_m.savefig(os.path.join(terms.folder, 'plots', 'mentions.png'), bbox_inches='tight', dpi = 300)
             out['fig_mentions'] = fig_m
 
             fig_um, _ = plot_comparison(dfs_unnormed, terms, cos=cos, plot_n=plot_n, normed_by=None, 
                                      suptitle='Mentions of Technologies')
-            fig_um.savefig(os.path.join(terms.folder, 'plots', 'mentions_unnormed.png'), bbox_inches='tight', dpi = 300)
+            if save_plots:
+                fig_um.savefig(os.path.join(terms.folder, 'plots', 'mentions_unnormed.png'), bbox_inches='tight', dpi = 300)
             out['fig_mentions_unnormed'] = fig_um
 
             fig_r, _ = plot_comparison(dfs_unnormed, terms, cos=cos, rank=True, rank_zero_fill=plot_rank_zero_fill, rank_lines=plot_rank_lines, 
                                      suptitle='Rankings of Mention Frequency')
-            fig_r.savefig(os.path.join(terms.folder, 'plots', 'rankings.png'), bbox_inches='tight', dpi = 300)
+            if save_plots:
+                fig_r.savefig(os.path.join(terms.folder, 'plots', 'rankings.png'), bbox_inches='tight', dpi = 300)
             out['fig_rankings'] = fig_r
 
         return out

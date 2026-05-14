@@ -1,6 +1,5 @@
 __all__ = ['Term', 'TermCollection', 'TERMS_ALL', 'TERMS_SUMMARY', 'TERMS_SIMPLE']
 
-import pandas as pd
 import os
 import matplotlib.pyplot as plt
 from typing import Iterable
@@ -40,7 +39,8 @@ class TermCollection:
 
         self.terms = list(terms)
         self.folder_name = folder_name.replace(' ', '-').lower()
-        self.folder = os.path.join('out', self.folder_name)
+        
+        self.folder = os.path.abspath(os.path.join(__file__, '..', '..', '..','out', self.folder_name))
         
         if not os.path.exists(self.folder):
             os.makedirs(self.folder)
@@ -368,7 +368,7 @@ TERMS_ALL = TermCollection(
           Term('Nuclear (SMR)', NUCLEAR_SMR_REGEX, 
                'tab:olive', dash=True, edgecolour='tab:grey', hatch='....'),
           Term('Nuclear fusion', NUCLEAR_FUSION_REGEX, 
-               'tab:olive', dash=True, edgecolour='gold', hatch='....'),
+               'tab:orange'),
      ],
      folder_name='all-terms'
 )
@@ -402,7 +402,7 @@ TERMS_SUMMARY = TermCollection(
         Term('Nuclear', f'{NUCLEAR_CONVENTIONAL_REGEX}|{NUCLEAR_SMR_REGEX}', 
             'tab:olive'),
         Term('Fusion', NUCLEAR_FUSION_REGEX, 
-            'tab:olive', dash=True, edgecolour='gold', hatch='....'),
+            'tab:orange')
     ], 
     folder_name='summary-terms'
 )
@@ -417,10 +417,8 @@ TERMS_SIMPLE = TermCollection(
              'turquoise'),
         Term('CCS', r'(carbon\s+capture(\s+and\s+(storage|sequestration|utili[sz]ation))|ccs)', 
              'dimgray'),
-        Term('Biofuel', 'biofuel|biodiesel|bioethanol', 
-             'tab:brown', dash=True, hatch = '....', edgecolour='peru'),
-        Term('Biogas', r'biomethane|renewable\s+natural\s+gas|\bRNG\b|\bR\.N\.G\.\b|biogas', 
-             'tab:brown', dash=True, hatch = '....', edgecolour='lightgrey'),
+        Term('Biofuel', r'bio-?(fuel|diesel|ethanol|methane|gas)|renewable\s+natural\s+gas|\bRNG\b|\bR\.N\.G\.\b', 
+             'tab:brown'),
         Term('Geothermal', r'geothermal|ground\.source|ground\s+source', 
              'tab:red'),
         Term('Tidal', r'tidal|wave', 
@@ -431,12 +429,10 @@ TERMS_SIMPLE = TermCollection(
              'lightgrey'),
         Term('Nature', r'\b(nature.based|nature\s+based|(re|a)forestation)\b', 
              'darkgreen'),
-        Term('Nuclear (conventional)', r'nuclear\s+(power|plants?|energy|reactor|fleet|fission)', 
+        Term('Nuclear', r'nuclear\s+(power|plants?|energy|reactor|fleet|fission)|(small|advanced)\s+modular\s+reactor', 
              'tab:olive'),
-        Term('Nuclear (SMR)', r'\b((small|advanced)\s+modular\s+reactor)\b', 
-             'tab:olive', dash=True, hatch = '....', edgecolour='tab:grey'),
-        Term('Nuclear fusion', r'nuclear\s+fusion|fusion\s+(energy|power|reactor|plant|research)', 
-             'tab:olive', dash=True, hatch = '....', edgecolour='gold')
+        Term('Fusion', r'nuclear\s+fusion|fusion\s+(energy|power|reactor|plant|research)', 
+             'tab:orange')
     ],
     folder_name = 'simple-terms'
 )
