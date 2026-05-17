@@ -3,19 +3,31 @@ __all__ = ['Company', 'COS', 'company_aliases']
 from dataclasses import dataclass
 import os
 
-DATA_DIR = os.path.join(os.path.dirname(__file__), '..', '..', '..', 'data')
+from .util import DATA_DIR
 
 @dataclass
 class Company:
     foldername: str
     alias: str
 
+    def __post_init__(self):
+        self.foldername = self.foldername.lower()
+        
+        if not os.path.exists(self.raw_folder):
+            os.makedirs(self.raw_folder)
+        if not os.path.exists(self.md_folder):
+            os.makedirs(self.md_folder)
+
     def __str__(self):
         return self.foldername
     
     @property
-    def folder(self):
-        return os.path.join(DATA_DIR, self.foldername)
+    def raw_folder(self):
+        return os.path.join(DATA_DIR, 'raw', self.foldername)
+    
+    @property
+    def md_folder(self):
+        return os.path.join(DATA_DIR, 'md', self.foldername)
 
 company_aliases = {
         'shell': 'Shell',

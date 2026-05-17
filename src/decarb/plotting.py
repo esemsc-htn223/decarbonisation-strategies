@@ -4,7 +4,7 @@ import matplotlib as mpl
 import numpy as np
 from typing import Iterable
 
-from .terms import Term, TermCollection, TERMS_ALL
+from .regex.terms import TermCollection, TERMS_ALL
 from .companies import Company, COS
 
 def plot_mentions(

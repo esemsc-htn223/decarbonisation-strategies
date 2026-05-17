@@ -1,4 +1,4 @@
-__all__ = ['search_file', 'search_files', 'run_pipeline']
+__all__ = ['search_file', 'search_files', 'regex_pipeline']
 
 import pandas as pd
 import re
@@ -7,8 +7,8 @@ import pymupdf
 from typing import Iterable
 
 from .terms import TermCollection, TERMS_ALL
-from .companies import Company
-from .plotting import plot_comparison
+from ..companies import Company
+from ..plotting import plot_comparison
 
 pymupdf.TOOLS.mupdf_display_errors(on = False)
 pymupdf.TOOLS.mupdf_display_warnings(on = False)
@@ -91,14 +91,14 @@ def search_files(
     return out.sort_index()
 
 
-def run_pipeline(terms: TermCollection, cos: Iterable[Company], *, 
+def regex_pipeline(terms: TermCollection, cos: Iterable[Company], *, 
                  count_type: str = 'all', norm_type: str = 'words',
                  reprocess: bool = False, save_csv: bool = True,
                  plot: bool = False, save_plots: bool = True,
                  plot_rank_zero_fill: str = 'nan', plot_rank_lines: bool = True,
                  plot_n: bool = True, plot_normed_by: str|None = 'words'):
         
-        terms.log('RUNNING PIPELINE')
+        terms.log(f'REGEX PIPELINE START: terms={terms.folder_name}, {save_csv=}, {plot=}, {save_plots=}')
 
         report_types = {'annual': 'an', 'sustainability-report': 'sr'}
 
@@ -114,7 +114,7 @@ def run_pipeline(terms: TermCollection, cos: Iterable[Company], *,
 
         for co in cos:
             for report_type in report_types:
-                reports_folder = os.path.join(co.folder, report_type)
+                reports_folder = os.path.join(co.raw_folder, report_type)
 
                 out_fname_normed = os.path.join(terms.folder, 'mentions', f'{co.foldername}-{report_types[report_type]}.csv')
                 out_fname_unnormed = os.path.join(terms.folder, 'mentions-unnormed', f'{co.foldername}-{report_types[report_type]}.csv')

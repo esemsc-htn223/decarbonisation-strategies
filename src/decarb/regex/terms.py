@@ -48,7 +48,7 @@ class TermCollection:
                 for term in self.terms:
                     f.write(f'{term.alias}: {term.regex}\n')
 
-        self.uuid = uuid.uuid5(uuid.NIL, ''.join([term.alias + term.regex for term in self.terms])).hex
+        self.uuid = uuid.uuid5(uuid.NAMESPACE_OID, ''.join([term.alias + term.regex for term in self.terms])).hex
 
         self.log('CREATED')
 
