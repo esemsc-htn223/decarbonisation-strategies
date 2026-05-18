@@ -1,6 +1,6 @@
 import pymupdf4llm
-from decarb.companies import Company
-from decarb.regex.terms import Term, TermCollection, TERMS_ALL
+from ..companies import Company
+from ..regex.terms import Term, TermCollection, TERMS_ALL
 import os
 import pymupdf4llm
 import re
@@ -13,25 +13,17 @@ MIN_CHUNK_SIZE = 500
 CHUNK_OVERLAP = 200
 
 def tidy_md(md:str):
-    tidy_md = md.replace('$', '\$')  # no maths in these reports
+    tidy_md = md.replace('$', r'\$')  # no maths in these reports
     tidy_md = re.sub(r'(-)\1{3,}', r'\1\1\1', tidy_md) # limit repeated - to 3
     tidy_md = re.sub(r'\n{3,}', r'\n\n', tidy_md) # limit repeated \n to 2
     return tidy_md
 
-def pdf_to_md(co: Company, report_type: str):
-    for pdf in os.listdir(os.path.join(co.raw_folder, report_type)):
-        if pdf.endswith('.pdf'):
-            pdf_path = os.path.join(co.raw_folder, report_type, pdf)
-            md_path = os.path.join(co.md_folder, report_type, pdf.replace('.pdf', '.md'))
-            with open(md_path, 'w') as f:
-                md = pymupdf4llm.to_markdown(pdf_path)
-                f.write(tidy_md(md))
-                
-
 def chunk_md(md:str, *, 
              max_chunk_size:int=MAX_CHUNK_SIZE, 
              min_chunk_size:int=MIN_CHUNK_SIZE, 
-             #chunk_overlap:int=CHUNK_OVERLAP
+             dir_to_save:str|None=None,
+             overwrite:bool=False,
+             #chunk_overlap:int=CHUNK_OVERLAP  # not implemented - could do manually?
              ) -> list[str]:
     '''
     Split the given markdown into chunks via content-aware splitting.
@@ -42,13 +34,30 @@ def chunk_md(md:str, *,
     Parameters
     ----------
     md : str
-        The markdown text to split.
+        The markdown content to split.
     max_chunk_size : int
         Maximum chunk size, in the token space. Note due to token character length being variable,
         chunks may have a __len__ that is longer than `max_chunk_size`
     min_chunk_size : int
         Minimum chunk size. Note this is calculated by characters (not tokens).
+    dir_to_save : str | None
+        The directory to save the chunked markdown files to. If None, the chunked files will not be saved.
+    overwrite : bool
+        Whether to overwrite existing chunk files in `dir_to_save`. If False and chunk files already exist,
+        the function will skip conversion.
+
+    Returns
+    -------
+    list[str]
+        List of markdown chunks.
     '''
+    if os.path.isdir(dir_to_save) and not overwrite:
+        list_dir = os.listdir(dir_to_save)
+        list_dir.pop('.DS_Store') if '.DS_Store' in list_dir else None
+        if len(list_dir) > 0 and all(f.endswith('.md') for f in list_dir):
+            print(f'Chunk files already exist in {dir_to_save}, and overwrite is False. Skipping conversion.')
+            return [open(os.path.join(dir_to_save, f)).read() for f in sorted(os.listdir(dir_to_save)) if f.endswith('.md')]
+
     headers_to_split_on = [
         #("#", "Header 1"),
         ("##", "Header 2"),
@@ -78,86 +87,81 @@ def chunk_md(md:str, *,
                 chunks.pop(i)
         else:
             i += 1
+    if dir_to_save is not None:
+        os.makedirs(dir_to_save, exist_ok=True)
+        for i, chunk in enumerate(chunks):
+            with open(os.path.join(dir_to_save, f'chunk-{i}.md'), 'w') as f:
+                f.write(chunk.page_content)
 
     return [chunk.page_content for chunk in chunks]
 
-
-def search_md_chunks(chunks: list[str], term: Term) -> list[bool]:
+def co_pdfs_to_md(co: Company, report_type: str, *, overwrite: bool = False, **chunk_kwargs) -> list[str]:
     '''
-    Search the given markdown chunks for the given terms. Returns a list of booleans, where each boolean
-    indicates whether the term was found in the corresponding chunk.
+    Convert the pdfs for the given company and report type to chunked markdown, 
+    and save them in the company's md folder.
 
     Parameters
     ----------
-    chunks : list[str]
-        The markdown chunks to search.
-    term : Term
-        The term to search for.
-    '''
-    results = []
+    co : Company
+        The company whose pdfs to convert.
+    report_type : str
+        The report type to convert, given as a folder name to be found in the Company's data folder.
 
-    for chunk in chunks:
-        results.append(bool(re.search(term.regex, chunk, re.I)))
-    return results
-
-def search_md_chunks_parallel(chunks: list[str], term: Term, max_workers: int = 4) -> list[bool]:
+    Returns
+    -------
+    list[str]
+        A list of the locations of the chunked markdown folders created.
     '''
-    Search the given markdown chunks for the given term in parallel. Returns a list of booleans, where each boolean
-    indicates whether the term was found in the corresponding chunk.
+
+    md_locs = []
+    reports_dir = os.path.join(co.raw_folder, report_type)
+    md_dir = os.path.join(co.md_folder, report_type)
+    if not os.path.isdir(reports_dir):
+        raise ValueError(f'{reports_dir} is not a directory')
+    if not os.path.isdir(md_dir):
+        os.makedirs(md_dir)
+
+    for pdf in os.listdir(reports_dir):
+        if pdf.endswith('.pdf'):
+            pdf_path = os.path.join(reports_dir, pdf)
+            md_chunks_dir = os.path.join(md_dir, pdf.replace('.pdf', ''))
+            
+            md = tidy_md(pymupdf4llm.to_markdown(pdf_path))
+            chunk_md(md, dir_to_save=md_chunks_dir.replace('.md', ''), overwrite=overwrite, **chunk_kwargs)
+            md_locs.append(md_chunks_dir)
+
+    return md_locs
+
+def search_chunks(chunks: list[str]|str, terms: Term|TermCollection = TERMS_ALL) -> dict[str, list[int]]:
+    '''
+    Search the given markdown chunks for the given terms. Returns a list of indices, where each index
+    indicates the position of the chunk where the term was found.
 
     Parameters
     ----------
-    chunks : list[str]
-        The markdown chunks to search.
-    term : Term
-        The term to search for.
-    max_workers : int
-        The maximum number of worker threads to use for parallel processing.
+    chunks : list[str]|str
+        The markdown chunks to search, either as a list of md content, or the path to a folder containing md files.
+    terms : Term | TermCollection
+        The term or collection of terms to search for.
+
+    Returns
+    -------
+    dict[str, list[int]]
+        A dictionary where the keys are term aliases and the values are lists of chunk indices where the term was found.
     '''
-    results = [None] * len(chunks)
+    if isinstance(chunks, str):
+        if os.path.isfile(chunks):
+            chunks = [open(chunks).read()]
+        elif os.path.isdir(chunks):
+            chunks = [open(f).read() for f in os.listdir(chunks) if f.endswith('.md')]
+        else:
+            raise ValueError(f'chunks is not a file or directory: {chunks}')
 
-    with ThreadPoolExecutor(max_workers=max_workers) as executor:
-        future_to_index = {executor.submit(re.search, term.regex, chunk, re.I): i for i, chunk in enumerate(chunks)}
-        for future in as_completed(future_to_index):
-            index = future_to_index[future]
-            try:
-                result = future.result()
-                results[index] = bool(result)
-            except Exception as exc:
-                print(f'Chunk {index} generated an exception: {exc}')
-                results[index] = False
+    if isinstance(terms, Term):
+        terms = [terms]
+    results = {}
 
-    return results
-
-def search_md_chunks_parallel_multiple_terms(chunks: list[str], terms: list[Term], max_workers: int = 4) -> list[dict[str, bool]]:
-    '''
-    Search the given markdown chunks for the given terms in parallel. Returns a list of dictionaries, where each dictionary
-    contains the search results for each term in the corresponding chunk.
-
-    Parameters
-    ----------
-    chunks : list[str]
-        The markdown chunks to search.
-    terms : list[Term]
-        The terms to search for.
-    max_workers : int
-        The maximum number of worker threads to use for parallel processing.
-    '''
-    results = [None] * len(chunks)
-
-    with ThreadPoolExecutor(max_workers=max_workers) as executor:
-        future_to_index = {executor.submit(search_md_chunks_parallel, [chunk], term, max_workers): (i, term.alias) for i, chunk in enumerate(chunks) for term in terms}
-        for future in as_completed(future_to_index):
-            index, term_alias = future_to_index[future]
-            try:
-                result = future.result()
-                if results[index] is None:
-                    results[index] = {}
-                results[index][term_alias] = result[0]
-            except Exception as exc:
-                print(f'Chunk {index} generated an exception: {exc}')
-                if results[index] is None:
-                    results[index] = {}
-                results[index][term_alias] = False
+    for term in terms:
+        results[term.alias] = [i for i, chunk in enumerate(chunks) if re.search(term.regex, chunk, re.I)]
 
     return results
