@@ -26,16 +26,23 @@ def _():
         COS, Company
     )
 
+    from src.decarb.llm.rag import search_chunks
+    from src.decarb.llm import inspection
+    from src.decarb.llm import pipeline
+
     return (
         COS,
         TERMS_ALL,
         TERMS_SIMPLE,
         TERMS_SUMMARY,
+        inspection,
         mo,
         np,
+        pipeline,
         plot_comparison,
         plt,
         regex_pipeline,
+        search_chunks,
     )
 
 
@@ -154,23 +161,69 @@ def _(chunks, mo):
 
 @app.cell
 def _(chunks, mo, np):
+    # display a random sample of chunks
     _inds = np.random.randint(0, len(chunks), size=5)
 
-    mo.accordion({f'Chunk {i}': mo.md(chunks[i].page_content) for i in _inds}, multiple=True)
+    mo.accordion({f'Chunk {i}': mo.md(chunks[i]) for i in _inds}, multiple=True)
     return
 
 
 @app.cell
 def _(MAX_CHUNK_SIZE, MIN_CHUNK_SIZE, chunks, plt):
     plt.figure(figsize=(10, 5))
-    plt.hist([len(c.page_content) for c in chunks], bins = 100)
+    plt.hist([len(c) for c in chunks], bins = 100)
     plt.title('Histogram of Chunk Lengths')
     plt.xlabel('Length of Chunks (characters)')
     plt.ylabel('Frequency')
     plt.axvline(MAX_CHUNK_SIZE, color='red', linestyle='dashed', linewidth=1, label='Max Chunk Size')
     plt.axvline(MIN_CHUNK_SIZE, color='black', linestyle='dashed', linewidth=1, label='Min Chunk Size')
-    #plt.legend()
+    plt.legend()
     plt.show()
+    return
+
+
+@app.cell
+def _(TERMS_ALL, chunks, inspection, search_chunks):
+    terms = TERMS_ALL
+
+    search_res = search_chunks(chunks, terms)
+    inspection.search_summary(chunks, terms, search_res=search_res)
+    return (search_res,)
+
+
+@app.cell
+def _(chunks, inspection, plt, search_res):
+    fig, ax = inspection.plot_search_results(search_res, chunks)
+    plt.show()
+    return
+
+
+@app.cell(hide_code=True)
+def _(mo):
+    mo.md(r"""
+    1. `convert`: pdfs -> md
+        - saved in data dir
+    2. `split`: md -> chunks
+        - currently in memory. could save these rather than the md file? would be slightly smaller?
+    3. `search`: chunks -> chunks + indexes for terms
+    4. `draft`: prompt base + relevant chunks (and overlap?) -> prompt
+    5. `analyse`: prompt -> json output
+        - saved in out dir
+    """)
+    return
+
+
+@app.cell
+def _(pipeline):
+    pipeline.stage_convert()
+    return
+
+
+@app.cell(hide_code=True)
+def _(mo):
+    mo.md(r"""
+    # Pipeline run
+    """)
     return
 
 
