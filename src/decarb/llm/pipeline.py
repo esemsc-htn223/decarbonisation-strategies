@@ -2,63 +2,73 @@ import os
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dotenv import load_dotenv
 from openai import OpenAI
+from typing import Iterable, Any
 
-def stage_analyse(target_date: str, model: str = "gpt-5.1", max_workers: int = 5):
-    """Stage 3: Run LLM analysis on all prompts."""
-    
+from .rag import chunk_md, search_chunks, co_pdfs_to_md
+from ..companies import Company, COS
+from ..util import REPORT_TYPES, DATA_DIR
+from ..regex.terms import Term, TermCollection, TERMS_ALL
 
-    load_dotenv()
-    client = OpenAI()
-    data_dir = get_data_dir(target_date)
+def stage_convert(cos: Company|Iterable[Company] = COS, report_types: Iterable[str]|str = REPORT_TYPES,
+                  num_workers: int = 5,
+                  **chunk_kwargs: Any):
+    '''
+    Convert all company pdfs to markdown, and chunk them for later analysis.
 
-    # Collect articles to analyse
-    to_analyze = []
-    for article_dir in sorted(data_dir.iterdir()):
-        if not article_dir.is_dir():
-            continue
+    Parameters
+    ----------
+    cos : Company | Iterable[Company]
+        The company/companies to convert. Defaults to BP, Chevron, Exxon, Shell, and Total.
+    report_types : Iterable[str]
+        The report type(s) to convert, given as folder names to be found in each Company's data folder.
+        Defaults to annual reports and sustainability reports.
+    '''
+    if isinstance(cos, Company):
+        cos = [cos]
+    if isinstance(report_types, str):
+        report_types = [report_types]
 
-        prompt_file = article_dir / "prompt.md"
-        response_file = article_dir / "response.md"
+    with ThreadPoolExecutor(max_workers=num_workers) as executor:
+        futures = []
+        for co in cos:
+            for report_type in report_types:
+                futures.append(executor.submit(co_pdfs_to_md, co, report_type, overwrite=False, **chunk_kwargs))
 
-        if not prompt_file.exists() or response_file.exists():
-            continue
-
-        meta_file = article_dir / "meta.json"
-        with open(meta_file) as f:
-            article = Article(**json.load(f))
-
-        to_analyze.append((article_dir, article, prompt_file.read_text()))
-
-    if not to_analyze:
-        print("No articles to analyze.")
-        return
-
-    print(f"Analyzing {len(to_analyze)} articles with {max_workers} workers...")
-
-    def analyze_one(item):
-        article_dir, article, prompt = item
-        response_file = article_dir / "response.md"
-        try:
-            response = client.responses.create(
-                model=model,
-                input=prompt,
-                reasoning={"effort": "medium"},
-                text={"verbosity": "medium"},
-            )
-            result = response.output_text
-            with open(response_file, 'w') as f:
-                f.write(result)
-            return (article.item_id, article.title[:50], len(result), None)
-        except Exception as e:
-            return (article.item_id, article.title[:50], 0, str(e))
-
-    with ThreadPoolExecutor(max_workers=max_workers) as executor:
-        futures = {executor.submit(analyze_one, item): item for item in to_analyze}
         for future in as_completed(futures):
-            item_id, title, chars, error = future.result()
-            if error:
-                print(f"  {item_id}: {title}... Error: {error}")
-            else:
-                print(f"  {item_id}: {title}... Done ({chars} chars)")
+            future.result()
 
-    print(f"\nAnalysis complete. Results in {data_dir}")
+    print('Conversion and chunking complete.')
+
+
+def stage_search(terms: Term|TermCollection):
+    '''
+    Search the markdown files created in stage_convert for the given terms, and save the results as csvs.
+
+    Parameters
+    ----------
+    terms : Term | TermCollection
+        The term or collection of terms to search for.
+    '''
+    pass
+        
+
+def stage_draft():
+    '''
+    Use the markdown files and search results from the previous stages to draft LLM prompts for each article.
+    '''
+    pass
+
+def stage_analyse(model: str = "gpt-5.1", max_workers: int = 5):
+    '''
+    Run LLM analysis on all prompts created in stage_draft, and save the results as json files.
+
+    Parameters
+    ----------
+    model : str
+        The name of the LLM model to use for analysis. Defaults to "gpt-5.1".
+    max_workers : int
+        The maximum number of worker threads to use for parallel analysis. Defaults to 5.
+    '''
+    pass
+
+
