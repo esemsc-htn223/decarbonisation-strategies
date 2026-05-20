@@ -7,14 +7,7 @@ from dataclasses import dataclass
 import uuid
 import logging
 
-logger = logging.getLogger('analysis')
-logger.setLevel(logging.DEBUG)
-
-logger_fh = logging.FileHandler(os.path.join('out', 'analysis.log'))
-logger_fh.setLevel(logging.DEBUG)
-logger_fh.set_name('analysis_debug')
-logger_fh.setFormatter(logging.Formatter('%(asctime)s - %(levelname)s - %(message)s'))
-logger.addHandler(logger_fh)
+from ..util import OUT_DIR, logger
 
 @dataclass
 class Term:
@@ -40,7 +33,7 @@ class TermCollection:
         self.terms = list(terms)
         self.folder_name = folder_name.replace(' ', '-').lower()
         
-        self.folder = os.path.abspath(os.path.join(__file__, '..', '..', '..','out', self.folder_name))
+        self.folder = os.path.join(OUT_DIR, self.folder_name)
         
         if not os.path.exists(self.folder):
             os.makedirs(self.folder)
