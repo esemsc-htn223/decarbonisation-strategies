@@ -19,6 +19,13 @@ def _():
     import matplotlib.pyplot as plt
     import matplotlib as mpl
     import numpy as np
+    import pymupdf4llm
+    import pymupdf
+    import tiktoken
+    import json
+    import os
+    from dotenv import load_dotenv
+    load_dotenv()
 
     from src.decarb import (
         regex_pipeline, plot_comparison, plot_mentions, plot_rankings, 
@@ -36,149 +43,53 @@ def _():
         TERMS_SIMPLE,
         TERMS_SUMMARY,
         inspection,
+        json,
         mo,
-        np,
+        os,
+        pd,
         pipeline,
         plot_comparison,
         plt,
+        pymupdf4llm,
         regex_pipeline,
         search_chunks,
+        tiktoken,
     )
 
 
 @app.cell
-def _():
-    import pymupdf4llm
-    import re
-    from langchain_text_splitters import MarkdownHeaderTextSplitter, RecursiveCharacterTextSplitter
-    from langchain_core.documents import Document
-    import os
-
-    def tidy_md(md:str):
-        tidy_md = md.replace('$', '\$')  # no maths in these reports
-        tidy_md = re.sub(r'(-)\1{3,}', r'\1\1\1', tidy_md) # limit repeated - to 3
-        tidy_md = re.sub(r'\n{3,}', r'\n\n', tidy_md) # limit repeated \n to 2
-        return tidy_md
-
-    pymupdf4llm.use_layout(True)
-    md = pymupdf4llm.to_markdown('data/raw/bp/annual/bp-annual-report-accounts-2007.pdf')
-    md = tidy_md(md)
-
-    with open('test2_layout.md', 'w') as _f:
-        _f.write(md[:3000])
-    return (
-        Document,
-        MarkdownHeaderTextSplitter,
-        RecursiveCharacterTextSplitter,
-        md,
-        os,
-    )
-
-
-@app.cell
-def _(
-    Document,
-    MarkdownHeaderTextSplitter,
-    RecursiveCharacterTextSplitter,
-    md,
-    os,
-):
-    TEST_DIR = 'test'
-    os.makedirs(TEST_DIR, exist_ok=True)
-
-    MAX_CHUNK_SIZE = 2000
-    MIN_CHUNK_SIZE = 500
-    CHUNK_OVERLAP = 0
-
-    def split(md, max_chunk_size=MAX_CHUNK_SIZE, min_chunk_size=MIN_CHUNK_SIZE, chunk_overlap=CHUNK_OVERLAP):
-        headers_to_split_on = [
-            #("#", "Header 1"),
-            ("##", "Header 2"),
-            ("###", "Header 3"),
-        ]
-
-        md_splitter = MarkdownHeaderTextSplitter(headers_to_split_on, strip_headers=False)
-        chunks = md_splitter.split_text(md)
-
-        # enforce maximum in the token space, with some overlap, and a minimum to avoid too-short chunks
-        text_splitter = RecursiveCharacterTextSplitter.from_tiktoken_encoder(
-            #separators=["\n\n", "\n", " ", ""],
-            chunk_size=max_chunk_size, 
-            chunk_overlap=chunk_overlap, 
-            keep_separator=True
-        )
-        chunks = text_splitter.split_documents(chunks)
-
-        # enforce minimum chunk size by merging short chunks with the next one
-        i = 0
-        while i < len(chunks):
-            if len(chunks[i].page_content) < min_chunk_size:
-                if i + 1 < len(chunks):
-                    chunks[i] = Document(page_content=chunks[i].page_content + chunks[i + 1].page_content)
-                    chunks.pop(i + 1)
-                else:
-                    chunks.pop(i)
-            else:
-                i += 1
-
-        return [chunk.page_content for chunk in chunks]
-
-    chunks = split(md)
+def _(os):
+    _chunks_dir = 'data/md/total/annual-report/total-form-20-f-2023'
+    chunks = [open(os.path.join(_chunks_dir, _f), 'r').read() for _f in os.listdir(_chunks_dir) if _f.endswith('.md')]
 
     {
-        'len(md)': len(md),
+        #'len(md)': len(md),
         'sum(out)': sum(len(c) for c in chunks),
         'no. chunks': len(chunks)
     
     }
-    return MAX_CHUNK_SIZE, MIN_CHUNK_SIZE, chunks
+    return (chunks,)
 
 
 @app.cell
-def _(chunks, mo):
-    min_len = min(len(c) for c in chunks)
-    max_len = max(len(c) for c in chunks)
-    print(f'Min chunk length: {min_len} characters')
-    print(f'Max chunk length: {max_len} characters')
-
-    # identify chunk with minimum length
-    min_chunk = min(chunks, key=lambda c: len(c))
-    max_chunk = max(chunks, key=lambda c: len(c))
-
-    mo.accordion(
-        {
-            'Min Chunk - 1': mo.md(chunks[chunks.index(min_chunk) - 1]),
-            'Min Chunk': mo.md(min_chunk),
-            'Min Chunk + 1': mo.md(chunks[chunks.index(min_chunk) + 1]),
-            'Max Chunk - 1': mo.md(chunks[chunks.index(max_chunk) - 1]),
-            'Max Chunk': mo.md(max_chunk),
-            'Max Chunk + 1': mo.md(chunks[chunks.index(max_chunk) + 1]),
-        },
-        multiple=True
-    )
+def _(chunks, inspection):
+    inspection.min_max_chunks(chunks)
     return
 
 
 @app.cell
-def _(chunks, mo, np):
+def _(chunks, inspection):
     # display a random sample of chunks
-    _inds = np.random.randint(0, len(chunks), size=5)
-
-    mo.accordion({f'Chunk {i}': mo.md(chunks[i]) for i in _inds}, multiple=True)
+    inspection.random_chunks(chunks, n=5)
     return
 
 
 @app.cell
-def _(MAX_CHUNK_SIZE, MIN_CHUNK_SIZE, chunks, plt):
-    plt.figure(figsize=(10, 5))
-    plt.hist([len(c) for c in chunks], bins = 100)
-    plt.title('Histogram of Chunk Lengths')
-    plt.xlabel('Length of Chunks (characters)')
-    plt.ylabel('Frequency')
-    plt.axvline(MAX_CHUNK_SIZE, color='red', linestyle='dashed', linewidth=1, label='Max Chunk Size')
-    plt.axvline(MIN_CHUNK_SIZE, color='black', linestyle='dashed', linewidth=1, label='Min Chunk Size')
-    plt.legend()
+def _(chunks, inspection, plt):
+    inspection.chunk_size_hist(chunks)
+
     plt.show()
+
     return
 
 
@@ -198,24 +109,77 @@ def _(chunks, inspection, plt, search_res):
     return
 
 
-@app.cell(hide_code=True)
-def _(mo):
-    mo.md(r"""
-    1. `convert`: pdfs -> md
-        - saved in data dir
-    2. `split`: md -> chunks
-        - currently in memory. could save these rather than the md file? would be slightly smaller?
-    3. `search`: chunks -> chunks + indexes for terms
-    4. `draft`: prompt base + relevant chunks (and overlap?) -> prompt
-    5. `analyse`: prompt -> json output
-        - saved in out dir
-    """)
+@app.cell
+def _(pipeline):
+    pipeline.stage_convert(overwrite=False)
     return
 
 
 @app.cell
 def _(pipeline):
-    pipeline.stage_convert()
+    pipeline.stage_search(progress_bar=True)
+    return
+
+
+@app.cell
+def _(json, os, pipeline, tiktoken):
+    # count number of md docs in data/md
+    md_dir = os.path.join(pipeline.DATA_DIR, 'md')
+
+    # count total no. tokens
+    encoding = tiktoken.get_encoding("cl100k_base")
+    tokens = {}
+    md_docs = {}
+    md_docs_unique = {}
+    total_md_docs = 0
+
+    for root, dirs, files in os.walk(md_dir):
+        for filename in files:
+            if not filename.endswith('.md'):
+                continue
+            total_md_docs += 1
+        
+            json_path = root.replace('data/md', 'out/all-terms/chunk-search-results') + '.json'
+            _fname = json_path.split('/')[-1].replace('.json', '')
+            if _fname not in tokens:
+                tokens[_fname] = 0
+
+            with open(json_path, "r") as _f:
+                _relevant_inds = sum(json.load(_f).values(), [])
+        
+            _chunk_i = int(filename.replace('chunk-', '').replace('.md', ''))
+            if _chunk_i in set(_relevant_inds):
+                md_docs[_fname] = md_docs.get(_fname, 0) + 1 * _relevant_inds.count(_chunk_i)
+                md_docs_unique[_fname] = md_docs_unique.get(_fname, 0) + 1
+                with open(os.path.join(root, filename), "r") as f:
+                    content = f.read()
+                    tokens[_fname] += len(encoding.encode(content)) * _relevant_inds.count(_chunk_i)
+
+    total_tokens = sum(tokens.values())
+    print(f'No. chunks to pass to model: \n\t{sum(md_docs.values()):,}')
+    print(f'\t--> no. unique: \n\t\t{sum(md_docs_unique.values()):,} / {total_md_docs:,}')
+    print(f'No. tokens to pass to model: \n\t{total_tokens:,}')
+    print(f'Approx min. cost (not accounting for header and metadata tokens):\n\t(batch, gpt-5.1) ${total_tokens * 0.625/1000000:.2f}\n\t(batch, gpt-5.4) ${total_tokens * 1.25/1000000:.2f}')
+    return (tokens,)
+
+
+@app.cell
+def _(pd, tokens):
+    df_tokens = pd.Series(tokens, name = 'tokens').sort_values(ascending=False).to_frame()
+    df_tokens['co'] = df_tokens.index.str.split('-').str[0]
+    df_tokens['year'] = df_tokens.index.str.split('-').str[-1]
+    df_tokens.index.name = 'file'
+    df_tokens.loc[df_tokens['co'] == 'total']
+    return
+
+
+@app.cell
+def _(pymupdf4llm):
+    #pymupdf4llm.use_layout(False)
+    #doc = pymupdf.open('data/raw/total/annual-report/total-form-20-f-2025 copy.pdf')
+
+    pymupdf4llm.to_markdown('data/raw/total/annual-report/total-form-20-f-2025 copy.pdf')
+
     return
 
 
