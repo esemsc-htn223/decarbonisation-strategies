@@ -3,13 +3,60 @@ import re
 import numpy as np
 import matplotlib.pyplot as plt
 import matplotlib as mpl
+import tiktoken
 
 from .rag import search_chunks
 from ..regex.terms import (
     Term, TermCollection, TERMS_ALL
 )
 
+def min_max_chunks(chunks: list[str]) -> mo.Html:
+    min_len = min(len(c) for c in chunks)
+    max_len = max(len(c) for c in chunks)
 
+    # identify chunk with minimum length
+    min_chunk = min(chunks, key=lambda c: len(c))
+    min_chunk_index = chunks.index(min_chunk)
+    max_chunk = max(chunks, key=lambda c: len(c))
+    max_chunk_index = chunks.index(max_chunk)
+
+    return mo.accordion(
+        {
+            f'Chunk {min_chunk_index - 1}': mo.md(chunks[min_chunk_index - 1]),
+            f'**Min Chunk** ({min_len} chars): Chunk {min_chunk_index}': mo.md(min_chunk),
+            f'Chunk {min_chunk_index + 1}': mo.md(chunks[min_chunk_index + 1]),
+            f'Chunk {max_chunk_index - 1}': mo.md(chunks[max_chunk_index - 1]),
+            f'**Max Chunk** ({max_len} chars): Chunk {max_chunk_index}': mo.md(max_chunk),
+            f'Chunk {max_chunk_index + 1}': mo.md(chunks[max_chunk_index + 1]),
+        },
+        multiple=True
+    )
+
+def random_chunks(chunks: list[str], n: int = 5) -> mo.Html:
+    indices = np.random.choice(len(chunks), size=n, replace=False)
+    return mo.accordion(
+        {f'Chunk {i}': mo.md(chunks[i]) for i in indices},
+        multiple=True
+    )
+
+def chunk_size_hist(chunks: list[str], encoding: tiktoken.Encoding|str = 'cl100k_base') -> mo.Html:
+    if isinstance(encoding, str):
+        encoding = tiktoken.get_encoding(encoding)
+    chunk_lengths_tokens = [len(encoding.encode(c)) for c in chunks]
+    chunk_lengths_chars = [len(c) for c in chunks]
+    
+    fig, axs = plt.subplots(1, 2, figsize=(15, 5))
+    
+    axs[0].sharey(axs[1])
+    axs[0].hist(chunk_lengths_chars, bins=100, color='green', alpha=0.7)
+    axs[0].set_title('Chunk Lengths (Characters)')
+    axs[0].set_xlabel('Length of Chunks (Characters)')
+    axs[0].set_ylabel('Frequency')
+    axs[1].hist(chunk_lengths_tokens, bins=100, color='blue', alpha=0.7)
+    axs[1].set_title('Chunk Lengths (Tokens)')
+    axs[1].set_xlabel('Length of Chunks (Tokens)')
+    axs[1].set_ylabel('Frequency')
+    return fig, axs
 
 def search_summary(chunks: list[str], terms: Term|TermCollection = TERMS_ALL, *, search_res: dict[str, list[int]]|None = None) -> mo.Html:
     '''
@@ -83,6 +130,12 @@ def plot_search_results(search_res, chunks, ax = None):
     ax.set_yticklabels(list(search_res.keys()))
     ax.set_xlabel('Chunk Index')
     ax.set_title('Search Results for Terms in Chunks')
-    ax.legend(handles = [mpl.patches.Patch(color='green', label='Term Found'), mpl.patches.Patch(color='white', label='Term Not Found')])
+    ax.legend(
+        handles = [mpl.patches.Patch(color='green', label='Term Found')],
+        ncols = 2,
+        loc = 'lower center',
+        bbox_to_anchor = (0.5, -0.2),
+        frameon = False
+    )
 
     return fig, ax
