@@ -46,11 +46,9 @@ def _():
         json,
         mo,
         os,
-        pd,
         pipeline,
         plot_comparison,
         plt,
-        pymupdf4llm,
         regex_pipeline,
         search_chunks,
         tiktoken,
@@ -59,14 +57,14 @@ def _():
 
 @app.cell
 def _(os):
-    _chunks_dir = 'data/md/total/annual-report/total-form-20-f-2023'
+    _chunks_dir = 'data/md/shell/annual-report/shell-annual-report-2025'
     chunks = [open(os.path.join(_chunks_dir, _f), 'r').read() for _f in os.listdir(_chunks_dir) if _f.endswith('.md')]
 
     {
         #'len(md)': len(md),
         'sum(out)': sum(len(c) for c in chunks),
         'no. chunks': len(chunks)
-    
+
     }
     return (chunks,)
 
@@ -89,13 +87,12 @@ def _(chunks, inspection, plt):
     inspection.chunk_size_hist(chunks)
 
     plt.show()
-
     return
 
 
 @app.cell
-def _(TERMS_ALL, chunks, inspection, search_chunks):
-    terms = TERMS_ALL
+def _(TERMS_SIMPLE, chunks, inspection, search_chunks):
+    terms = TERMS_SIMPLE
 
     search_res = search_chunks(chunks, terms)
     inspection.search_summary(chunks, terms, search_res=search_res)
@@ -105,6 +102,7 @@ def _(TERMS_ALL, chunks, inspection, search_chunks):
 @app.cell
 def _(chunks, inspection, plt, search_res):
     fig, ax = inspection.plot_search_results(search_res, chunks)
+    plt.grid(which = 'major', axis = 'y', color = 'k')
     plt.show()
     return
 
@@ -117,7 +115,13 @@ def _(pipeline):
 
 @app.cell
 def _(pipeline):
-    pipeline.stage_search(progress_bar=True)
+    pipeline.stage_chunk(overwrite=False)
+    return
+
+
+@app.cell
+def _(pipeline):
+    pipeline.stage_search(overwrite=False)
     return
 
 
@@ -138,7 +142,7 @@ def _(json, os, pipeline, tiktoken):
             if not filename.endswith('.md'):
                 continue
             total_md_docs += 1
-        
+
             json_path = root.replace('data/md', 'out/all-terms/chunk-search-results') + '.json'
             _fname = json_path.split('/')[-1].replace('.json', '')
             if _fname not in tokens:
@@ -146,7 +150,7 @@ def _(json, os, pipeline, tiktoken):
 
             with open(json_path, "r") as _f:
                 _relevant_inds = sum(json.load(_f).values(), [])
-        
+
             _chunk_i = int(filename.replace('chunk-', '').replace('.md', ''))
             if _chunk_i in set(_relevant_inds):
                 md_docs[_fname] = md_docs.get(_fname, 0) + 1 * _relevant_inds.count(_chunk_i)
@@ -160,26 +164,6 @@ def _(json, os, pipeline, tiktoken):
     print(f'\t--> no. unique: \n\t\t{sum(md_docs_unique.values()):,} / {total_md_docs:,}')
     print(f'No. tokens to pass to model: \n\t{total_tokens:,}')
     print(f'Approx min. cost (not accounting for header and metadata tokens):\n\t(batch, gpt-5.1) ${total_tokens * 0.625/1000000:.2f}\n\t(batch, gpt-5.4) ${total_tokens * 1.25/1000000:.2f}')
-    return (tokens,)
-
-
-@app.cell
-def _(pd, tokens):
-    df_tokens = pd.Series(tokens, name = 'tokens').sort_values(ascending=False).to_frame()
-    df_tokens['co'] = df_tokens.index.str.split('-').str[0]
-    df_tokens['year'] = df_tokens.index.str.split('-').str[-1]
-    df_tokens.index.name = 'file'
-    df_tokens.loc[df_tokens['co'] == 'total']
-    return
-
-
-@app.cell
-def _(pymupdf4llm):
-    #pymupdf4llm.use_layout(False)
-    #doc = pymupdf.open('data/raw/total/annual-report/total-form-20-f-2025 copy.pdf')
-
-    pymupdf4llm.to_markdown('data/raw/total/annual-report/total-form-20-f-2025 copy.pdf')
-
     return
 
 
