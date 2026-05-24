@@ -4,7 +4,8 @@ import logging
 import os
 DATA_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..', 'data'))
 OUT_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..', 'out'))
-REPORT_TYPES = {'annual-report': 'an', 'sustainability-report': 'sr'}
+REPORT_TYPES_SHORT = {'annual-report': 'an', 'sustainability-report': 'sr'}
+REPORT_TYPES_LONG = {'annual-report': 'annual financial report', 'sustainability-report': 'sustainability report'}
 
 logger = logging.getLogger('analysis')
 logger.setLevel(logging.DEBUG)

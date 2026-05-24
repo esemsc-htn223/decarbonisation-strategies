@@ -8,12 +8,12 @@ from tqdm import tqdm
 
 from .rag import search_chunks, co_pdfs_to_md, pdf_to_md, chunk_md
 from ..companies import Company, COS, company_aliases
-from ..util import REPORT_TYPES, DATA_DIR
+from ..util import REPORT_TYPES_SHORT, DATA_DIR
 from ..regex.terms import Term, TermCollection, TERMS_ALL
 
 def md_dir_contents(yield_level: Literal['report', 'chunk_folder', 'chunk']) -> Iterable[str]:
     '''
-    Generator that yields the paths of all markdown files for all companies and report types.
+    Generator that yields the paths of all markdown files/directories for all companies and report types.
     '''
     for co in os.listdir(os.path.join(DATA_DIR, 'md')):
         co_dir = os.path.join(DATA_DIR, 'md', co)
@@ -63,7 +63,7 @@ def file_co_rp_name(file_path) -> tuple[str|None, str|None, str|None]:
         flist += [None] * (4 - len(flist))  # Pad with None if not enough elements
     return flist[1], flist[2], flist[3]
 
-def stage_convert(cos: Company|Iterable[Company] = COS, report_types: Iterable[str]|str = REPORT_TYPES,
+def stage_convert(cos: Company|Iterable[Company] = COS, report_types: Iterable[str]|str = REPORT_TYPES_SHORT,
                   num_workers: int = 2,
                   overwrite: bool = False,
                   progress_bar: bool = True):
@@ -127,8 +127,7 @@ def stage_chunk(*,
     chunk_kwargs : dict
         Additional keyword arguments to pass to the chunk_md function, such as chunk_size and chunk_overlap.
     '''
-    cos = [Company(co_folder, company_aliases.get(co)) for co_folder in os.listdir(os.path.join(DATA_DIR, 'md')) if os.path.isdir(os.path.join(DATA_DIR, 'md', co_folder))]
-    
+
     # chunk in parallel using threads (no OCR, so not limited to processes)
     with ThreadPoolExecutor(max_workers=num_workers) as executor:
         futures = []

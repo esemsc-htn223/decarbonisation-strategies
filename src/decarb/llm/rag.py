@@ -48,6 +48,7 @@ def chunk_md(md:str, *,
              dir_to_save:str|None=None,
              overwrite_chunks:bool=False,
              remove_original_md:bool=False,
+             encoder_name:str='gpt2',
              #chunk_overlap:int=CHUNK_OVERLAP  # not implemented - could do manually?
              ) -> list[str]:
     '''
@@ -108,6 +109,7 @@ def chunk_md(md:str, *,
 
         # enforce maximum in the token space, with some overlap, and a minimum to avoid too-short chunks
         text_splitter = RecursiveCharacterTextSplitter.from_tiktoken_encoder(
+            encoding_name=encoder_name,
             #separators=["\n\n", "\n", " ", ""],
             chunk_size=max_chunk_size, 
             #chunk_overlap=chunk_overlap, 

@@ -167,6 +167,18 @@ def _(json, os, pipeline, tiktoken):
     return
 
 
+@app.cell
+def _(COS, TERMS_SIMPLE, chunks, mo):
+    from src.decarb.llm import prompt
+
+    mo.md(
+        prompt.construct_prompt(company = COS[0], report_type = 'annual-report', year = 2023, term = TERMS_SIMPLE[0], chunks = chunks[:5], chunk_inds = [2, 3], overlap_strategy='both', overlap_amount = 0.5)
+        #prompt.construct_extracts(chunks[:5], [2, 3], overlap_strategy='both', overlap_amount = 0.5)
+
+    )
+    return
+
+
 @app.cell(hide_code=True)
 def _(mo):
     mo.md(r"""
