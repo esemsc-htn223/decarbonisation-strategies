@@ -5,90 +5,92 @@ import matplotlib.pyplot as plt
 from typing import Iterable
 from dataclasses import dataclass
 import uuid
-import logging
 
-from ..util import OUT_DIR, logger
+from ..util import DATA_DIR, logger
 
 @dataclass
 class Term:
-    alias: str
-    regex: str
-    colour: str
-    prompt_alias: str|None = None
+     alias: str
+     regex: str
+     colour: str
+     prompt_alias: str|None = None
 
-    #linestyle: str|None = None
-    dash: bool = False
-    marker: str|None = None
-    hatch: str|None = None
-    edgecolour: str|None = None
-    dash_ls = (0, (5, 10)) # custom dashed linestyle for terms with dash=True
+     #linestyle: str|None = None
+     dash: bool = False
+     marker: str|None = None
+     hatch: str|None = None
+     edgecolour: str|None = None
+     dash_ls = (0, (5, 10)) # custom dashed linestyle for terms with dash=True
 
-    def __post_init__(self):
-        if self.prompt_alias is None:
-            self.prompt_alias = self.alias
+     def __post_init__(self):
+          if self.prompt_alias is None:
+               self.prompt_alias = self.alias
+          self.prompt_fname = self.alias.lower().replace(' ', '_').replace('(', '').replace(')', '') + '.txt'
+     
     
-    def __str__(self):
-        return self.alias
+     def __str__(self):
+          return self.alias
     
     
 
 class TermCollection:
-    def __init__(self, terms: Iterable[Term], folder_name: str):
+     def __init__(self, terms: Iterable[Term], folder_name: str):
 
-        # check that all aliases are unique
-        aliases = [term.alias for term in terms]
-        if len(aliases) != len(set(aliases)):
-            raise ValueError('All term aliases must be unique')
+          # check that all aliases are unique
+          aliases = [term.alias for term in terms]
+          if len(aliases) != len(set(aliases)):
+               raise ValueError('All term aliases must be unique')
 
-        self.terms = list(terms)
-        self.folder_name = folder_name.replace(' ', '-').lower()
-        
-        self.folder = os.path.join(OUT_DIR, self.folder_name)
-        
-        if not os.path.exists(self.folder):
-            os.makedirs(self.folder)
-            with open(os.path.join(self.folder, 'terms.txt'), 'w') as f:
-                for term in self.terms:
-                    f.write(f'{term.alias}: {term.regex}\n')
+          self.terms = list(terms)
+          self.folder_name = folder_name.replace(' ', '-').lower()
 
-        self.uuid = uuid.uuid5(uuid.NAMESPACE_OID, ''.join([term.alias + term.regex for term in self.terms])).hex
+          self.folder = os.path.join(DATA_DIR, 'terms', self.folder_name)
 
-        self.log('CREATED')
+          if not os.path.exists(self.folder):
+               os.makedirs(self.folder)
+          if not os.path.exists(os.path.join(self.folder, 'terms.txt')):
+               with open(os.path.join(self.folder, 'terms.txt'), 'w') as f:
+                    for term in self.terms:
+                         f.write(f'{term.alias}: {term.regex}\n')
 
-    def __iter__(self):
-        return iter(self.terms)
+          self.uuid = uuid.uuid5(uuid.NAMESPACE_OID, ''.join([term.alias + term.regex for term in self.terms])).hex
+
+          self.log('CREATED')
+
+     def __iter__(self):
+          return iter(self.terms)
     
-    def __getitem__(self, key: str|int):
-        if isinstance(key, int):
-            return self.terms[key]
-        for term in self.terms:
-            if term.alias == key:
-                return term
-            if term.alias.lower() == key.lower():
-                return term
-        raise KeyError(f'Term with alias {key} not found')
+     def __getitem__(self, key: str|int):
+          if isinstance(key, int):
+               return self.terms[key]
+          for term in self.terms:
+               if term.alias == key:
+                   return term
+               if term.alias.lower() == key.lower():
+                  return term
+          raise KeyError(f'Term with alias {key} not found')
     
-    def __len__(self):
-        return len(self.terms)
+     def __len__(self):
+           return len(self.terms)
 
-    def plot_colours(self):
-        _fig, (_ax1, _ax2) = plt.subplots(nrows=2, figsize = (5, 6))
-        for term in self.terms:
-            _ax1.plot([], [], label=' ', color=term.colour, linestyle=term.dash_ls if term.dash else None, marker = None, gapcolor=term.edgecolour)
-            _ax1.scatter([], [], color=term.colour, marker = term.marker, hatch=term.hatch, edgecolor=term.edgecolour, label=' ')
-        _ax1.legend(loc='center', ncols=len(self.terms), frameon=False, markerscale=1)
-        _ax1.axis('off')
+     def plot_colours(self):
+          _fig, (_ax1, _ax2) = plt.subplots(nrows=2, figsize = (5, 6))
+          for term in self.terms:
+               _ax1.plot([], [], label=' ', color=term.colour, linestyle=term.dash_ls if term.dash else None, marker = None, gapcolor=term.edgecolour)
+               _ax1.scatter([], [], color=term.colour, marker = term.marker, hatch=term.hatch, edgecolor=term.edgecolour, label=' ')
+          _ax1.legend(loc='center', ncols=len(self.terms), frameon=False, markerscale=1)
+          _ax1.axis('off')
 
-        # pichart of all colours and hatches
-        _wedges, _ = _ax2.pie([1]*len(self.terms), labels=[term.alias for term in self.terms], colors=[term.colour for term in self.terms], hatch=[term.hatch for term in self.terms], rotatelabels=True)#, edgecolor=[term.edgecolour for term in self.terms], startangle=90)
-        for wedge, term in zip(_wedges, self.terms):
-            if term.edgecolour:
-                wedge.set_edgecolor(term.edgecolour)
+          # pichart of all colours and hatches
+          _wedges, _ = _ax2.pie([1]*len(self.terms), labels=[term.alias for term in self.terms], colors=[term.colour for term in self.terms], hatch=[term.hatch for term in self.terms], rotatelabels=True)#, edgecolor=[term.edgecolour for term in self.terms], startangle=90)
+          for wedge, term in zip(_wedges, self.terms):
+               if term.edgecolour:
+                    wedge.set_edgecolor(term.edgecolour)
 
-        return _fig
-    
-    def log(self, message:str):
-        logger.debug(f'{self.uuid}: {message}')
+          return _fig
+     
+     def log(self, message:str):
+          logger.debug(f'{self.uuid}: {message}')
 
 
 SOLAR_REGEX = r'''\b(solar\s+(power|energy|farm|park|plant|panel|cell|module|PV|photovoltaic|thermal|roof|rooftop|capacity|generation|project|investment|asset|portfolio|array|system|technology)|
