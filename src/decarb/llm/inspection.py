@@ -4,6 +4,7 @@ import numpy as np
 import matplotlib.pyplot as plt
 import matplotlib as mpl
 import tiktoken
+import os
 
 from .rag import search_chunks
 from ..regex.terms import (
@@ -58,14 +59,17 @@ def chunk_size_hist(chunks: list[str], encoding: tiktoken.Encoding|str = 'cl100k
     axs[1].set_ylabel('Frequency')
     return fig, axs
 
-def search_summary(chunks: list[str], terms: Term|TermCollection = TERMS_ALL, *, search_res: dict[str, list[int]]|None = None) -> mo.Html:
+def search_summary(chunks: list[str]|dict[int, str]|str, terms: Term|TermCollection = TERMS_ALL, *, search_res: dict[str, list[int]]|None = None) -> mo.Html:
     '''
     Create a marimo accordian showing search results for the given terms and chunks.
 
     Parameters
     ----------
-    chunks : list[str]
-        The markdown chunks that were searched.
+    chunks : list[str] | dict[int, str] | str
+        The markdown chunks that were searched, either as a list of chunk content (sorted by chunk index) or a dictionary where the keys are chunk indices and the values are the chunk content.
+        Or a string path to a directory containing chunk markdown files named in the format `chunk-{index}.md`.
+    terms : Term | TermCollection
+        The term or collection of terms that were searched for.
     search_res : dict[str, list[int]]
         The search results, as returned by `search_chunks`.
     terms : Term | TermCollection
@@ -81,10 +85,21 @@ def search_summary(chunks: list[str], terms: Term|TermCollection = TERMS_ALL, *,
     if search_res is None:
         search_res = search_chunks(chunks, terms)
 
+    # enforce dict format
+    if isinstance(chunks, list):
+        chunks_dict = {i: chunk for i, chunk in enumerate(chunks)}
+    elif isinstance(chunks, dict):
+        chunks_dict = chunks
+    elif isinstance(chunks, str) and os.path.isdir(chunks):
+        chunks_dict = {int(f.split('-')[1].split('.')[0]): open(os.path.join(chunks, f)).read() for f in sorted(os.listdir(chunks)) if f.endswith('.md')}
+    else:
+        raise ValueError(f'chunks must be either a list of strings, a dictionary of int: str, or a directory path containing chunk markdown files. Got {type(chunks)}')
+
     master_accordion_content = {}
     for term in terms:
         # display the chunks where the term was found, with the term highlighted
-        term_accordion_content = {f'Chunk {i}': chunks[i] for i in search_res[term.alias]}
+        term_accordion_content = {f'Chunk {i}': chunks_dict[i] for i in search_res[term.alias]}
+        term_accordion_content = dict(sorted(term_accordion_content.items(), key=lambda x: int(x[0].split()[1])))  # sort by chunk index
         n_matches = {}
         for label, chunk in term_accordion_content.items():
             matches = re.finditer(term.regex, chunk, re.I)

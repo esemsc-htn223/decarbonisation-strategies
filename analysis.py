@@ -33,7 +33,7 @@ def _():
         COS, Company
     )
 
-    from src.decarb.llm.rag import search_chunks
+    from src.decarb.llm import rag
     from src.decarb.llm import inspection
     from src.decarb.llm import pipeline
 
@@ -49,8 +49,8 @@ def _():
         pipeline,
         plot_comparison,
         plt,
+        rag,
         regex_pipeline,
-        search_chunks,
         tiktoken,
     )
 
@@ -91,10 +91,10 @@ def _(chunks, inspection, plt):
 
 
 @app.cell
-def _(TERMS_SIMPLE, chunks, inspection, search_chunks):
+def _(TERMS_SIMPLE, chunks, inspection, rag):
     terms = TERMS_SIMPLE
 
-    search_res = search_chunks(chunks, terms)
+    search_res = rag.search_chunks(chunks, terms)
     inspection.search_summary(chunks, terms, search_res=search_res)
     return (search_res,)
 
@@ -121,7 +121,7 @@ def _(pipeline):
 
 @app.cell
 def _(pipeline):
-    pipeline.stage_search(overwrite=False)
+    pipeline.stage_search(overwrite=True)
     return
 
 
@@ -168,21 +168,31 @@ def _(json, os, pipeline, tiktoken):
 
 
 @app.cell
-def _(COS, TERMS_SIMPLE, chunks, mo):
-    from src.decarb.llm import prompt
+def _(pipeline):
+    pipeline.stage_draft(overwrite=True, progress_bar=True, overlap_strategy = None)
+    return
 
-    mo.md(
-        prompt.construct_prompt(company = COS[0], report_type = 'annual-report', year = 2023, term = TERMS_SIMPLE[0], chunks = chunks[:5], chunk_inds = [2, 3], overlap_strategy='both', overlap_amount = 0.5)
-        #prompt.construct_extracts(chunks[:5], [2, 3], overlap_strategy='both', overlap_amount = 0.5)
 
-    )
+@app.cell
+def _(TERMS_ALL, inspection, rag):
+    test_chunks_dir = 'data/md/shell/annual-report/shell-annual-report-2025'
+    test_chunks = rag.chunks_list(test_chunks_dir)
+    inspection.search_summary(test_chunks_dir, [TERMS_ALL[0]])
+    #rag.search_chunks(test_chunks, TERMS_ALL)
+    return (test_chunks_dir,)
+
+
+@app.cell
+def _(os, test_chunks_dir):
+    for _i, _ch in {int(f.split('-')[-1].replace('.md', '')): open(os.path.join(test_chunks_dir, f)).read() for f in os.listdir(test_chunks_dir)[0:2] if f.endswith('.md')}.items():
+        print(f'Chunk {_i}:\n{_ch}\n{"-"*50}\n')
     return
 
 
 @app.cell(hide_code=True)
 def _(mo):
     mo.md(r"""
-    # Pipeline run
+    # Regex Pipeline
     """)
     return
 
@@ -215,11 +225,6 @@ def _(COS, TERMS_SIMPLE, out_simple, plot_comparison, plt):
     plot_comparison(out_simple['dfs_unnormed'], terms=TERMS_SIMPLE, cos=COS[:2], rank=True,
                     suptitle='Technology mention rankings')
     plt.show()
-    return
-
-
-@app.cell
-def _():
     return
 
 

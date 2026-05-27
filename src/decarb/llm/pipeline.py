@@ -6,62 +6,12 @@ from typing import Iterable, Any, Literal
 import json
 from tqdm import tqdm
 
-from .rag import search_chunks, co_pdfs_to_md, pdf_to_md, chunk_md
+from .rag import search_chunks, pdf_to_md, chunk_md, md_dir_contents, file_co_rp_name
+from .prompt import construct_prompt
 from ..companies import Company, COS, company_aliases
-from ..util import REPORT_TYPES_SHORT, DATA_DIR
+from ..util import REPORT_TYPES_SHORT, DATA_DIR, OUT_DIR, logger_llm
 from ..regex.terms import Term, TermCollection, TERMS_ALL
 
-def md_dir_contents(yield_level: Literal['report', 'chunk_folder', 'chunk']) -> Iterable[str]:
-    '''
-    Generator that yields the paths of all markdown files/directories for all companies and report types.
-    '''
-    for co in os.listdir(os.path.join(DATA_DIR, 'md')):
-        co_dir = os.path.join(DATA_DIR, 'md', co)
-        if not os.path.isdir(co_dir):
-            continue
-        for report_type in os.listdir(co_dir):
-            report_type_dir = os.path.join(co_dir, report_type)
-            if not os.path.isdir(report_type_dir):
-                continue
-            for report in os.listdir(report_type_dir):
-                report = os.path.join(report_type_dir, report)
-
-                if yield_level == 'report':
-                    if report.endswith('.md'):
-                        yield report
-
-                elif yield_level == 'chunk_folder':
-                    if os.path.isdir(report):
-                        yield report
-
-                elif yield_level == 'chunk':
-                    if os.path.isdir(report):
-                        for md_file in os.listdir(report):
-                            if md_file.endswith('.md'):
-                                yield os.path.join(report, md_file)
-                                
-                else:
-                    raise ValueError(f"yield_level must be one of 'report', 'chunk_folder', or 'chunk'. Got {yield_level}")
-
-def file_co_rp_name(file_path) -> tuple[str|None, str|None, str|None]:
-    '''
-    Get the company, report type, and report name from a given filepath in the data directory.
-    
-    Parameters
-    ----------
-    file_path : str
-        The path of the file to extract the company, report type, and report name from.
-    
-    Returns
-    -------
-    tuple[str|None, str|None, str|None]
-        A tuple containing the company, report type, and report name, in that order. 
-        If any of these cannot be extracted from the file path, the corresponding value in the tuple will be None.
-    '''
-    flist = file_path.replace(DATA_DIR + os.path.sep, '').split(os.path.sep)
-    if len(flist) < 4:
-        flist += [None] * (4 - len(flist))  # Pad with None if not enough elements
-    return flist[1], flist[2], flist[3]
 
 def stage_convert(cos: Company|Iterable[Company] = COS, report_types: Iterable[str]|str = REPORT_TYPES_SHORT,
                   num_workers: int = 2,
@@ -160,27 +110,103 @@ def stage_search(terms: TermCollection=TERMS_ALL, *, overwrite: bool = False, pr
     with tqdm(total=total, desc="Processing companies", disable=not progress_bar, bar_format='{desc}: {bar} {n}/{total}') as pbar:
         for report_dir in md_dir_contents(yield_level='chunk_folder'):
             co, report_type, report = file_co_rp_name(report_dir)
-            out_dir = os.path.join(terms.folder, 'chunk-search-results', co, report_type)
-            if os.path.exists(os.path.join(out_dir, f'{report}.json')) and not overwrite:
-                continue
-            os.makedirs(out_dir, exist_ok=True)
+            
+            save_dir = os.path.join(terms.folder, 'chunk-search-results', co, report_type)
+            os.makedirs(save_dir, exist_ok=True)
 
-            chunks = [open(os.path.join(report_dir, f)).read() for f in sorted(os.listdir(report_dir)) if f.endswith('.md')]
-            search_results = search_chunks(chunks, terms)
-            pbar.update(len(chunks))
-
-            # save search results as csv
-            with open(os.path.join(out_dir, f'{report}.json'), 'w') as f:
-                json.dump(search_results, f, indent=4)
+            search_chunks(
+                report_dir, terms, 
+                save_path=os.path.join(save_dir, f'{report}.json'), 
+                overwrite=overwrite
+            )
+            pbar.update(sum(1 for f in os.listdir(report_dir) if f.endswith('.md')))
     
     if not progress_bar:
         print('search complete')
 
-def stage_draft():
+def stage_draft(terms: TermCollection=TERMS_ALL, *, 
+                overlap_strategy: Literal["before", "after", "both", ]|None = 'both',
+                overlap_amount: float = 0.2,
+                overwrite: bool = False,
+                progress_bar: bool = True):
     '''
     Use the markdown files and search results from the previous stages to draft LLM prompts for each article.
+
+    Parameters
+    ----------
+    terms : TermCollection
+        The collection of terms to draft prompts for.
+    overwrite : bool
+        Whether to overwrite existing prompt files. Defaults to False.
+    progress_bar : bool
+        Whether to display a progress bar. Defaults to True.
     '''
-    pass
+
+    if isinstance(terms, str):
+        res_folder = os.path.join(DATA_DIR, 'terms', terms, 'chunk-search-results')
+    elif isinstance(terms, TermCollection):
+        res_folder = os.path.join(terms.folder, 'chunk-search-results')
+    else:
+        raise ValueError(f'Invalid type for terms: {type(terms)}. Please provide either a TermCollection object, or the folder name of a TermCollection (as a str).')
+    
+    if not os.path.exists(res_folder):
+        raise ValueError(f'TermCollection folder not found at {res_folder}. Please provide a valid TermCollection folder name, or a TermCollection object.')
+        
+    with tqdm(total=sum(1 for _ in md_dir_contents(yield_level='chunk_folder'))*len(terms), desc="Drafting prompts", disable=not progress_bar, bar_format='{desc}: {bar} {n}/{total}') as pbar:
+        for co in os.listdir(res_folder):
+            for report_type in os.listdir(os.path.join(res_folder, co)):
+                for res_file in os.listdir(os.path.join(res_folder, co, report_type)):
+                    
+                    if res_file.endswith('.json'):
+                        
+                        report = res_file.replace('.json', '')
+                        report_path = os.path.join(terms.folder, 'prompts', co, report_type, f'{report}')
+                        chunks_path = os.path.join(DATA_DIR, 'md', co, report_type, report)
+                        os.makedirs(report_path, exist_ok=True)
+                        logger_llm.debug(f'PROCESSING: {co} - {report_type} - {res_file}')
+                        
+                        
+                        with open(os.path.join(res_folder, co, report_type, res_file)) as f:
+                            search_results = json.load(f)
+                        
+                        
+                        for term_alias, chunk_inds in search_results.items():
+                            if chunk_inds is None or len(chunk_inds) == 0:
+                                logger_llm.debug(f'NO CHUNKS for {term_alias} in {co} - {report_type} - {report}. Skipping prompt construction for this term.')
+                                pbar.update(1)
+                                continue
+                            
+                            term = terms[term_alias]
+                            
+                            prompt_path = os.path.join(report_path, term.prompt_fname)
+
+                            logger_llm.debug(f'Constructing prompt for {co} - {report_type} - {report} - {term_alias}. Saving to {prompt_path}')
+                            if not overwrite and os.path.isfile(prompt_path):
+                                logger_llm.debug(f'PROMPT NOT CREATED: {prompt_path} already exists and overwrite=False')
+                                pbar.update(1)
+                                continue
+
+                            # check year is a valid 4 digit no
+                            year = report.split('-')[-1]
+                            if not (year.isdigit() and len(year) == 4):
+                                logger_llm.warning(f'INVALID PROMPT YEAR: "{year}" from -> "{report}". Skipping prompt construction for this report.')
+                                pbar.update(1)
+                                continue
+                            
+                            chunks = [open(os.path.join(chunks_path, chunk)).read() for chunk in os.listdir(chunks_path) if chunk.startswith('chunk-') and chunk.endswith('.md')]
+                            
+                            construct_prompt(
+                                company=co, report_type=report_type, year=year, term=term,
+                                chunks=chunks, chunk_inds=chunk_inds,
+                                overlap_strategy=overlap_strategy, overlap_amount=overlap_amount,
+                                save_path=prompt_path, overwrite=overwrite
+                            )
+                            pbar.update(1)
+
+    if not progress_bar:
+        print('prompts drafted')
+        
+    
 
 def stage_analyse(model: str = "gpt-5.1", max_workers: int = 5):
     '''

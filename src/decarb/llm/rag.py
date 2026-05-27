@@ -2,6 +2,8 @@ import pymupdf4llm
 from ..companies import Company
 from ..regex.terms import Term, TermCollection, TERMS_ALL
 from ..util import logger_llm, DATA_DIR
+
+
 import os
 import pymupdf4llm
 import pymupdf
@@ -10,6 +12,10 @@ from langchain_text_splitters import MarkdownHeaderTextSplitter, RecursiveCharac
 from langchain_core.documents import Document
 from concurrent.futures import ThreadPoolExecutor, ProcessPoolExecutor, as_completed
 from dotenv import load_dotenv
+from typing import Iterable, Literal
+import json
+
+
 load_dotenv()  # in case TESSDATA_PREFIX is in .env - required for ocr of troublesome docs
 
 MAX_CHUNK_SIZE = 2000
@@ -235,37 +241,130 @@ def co_pdfs_to_md(co: Company, report_type: str, *, overwrite: bool = False, **c
 
     return md_locs
 
-def search_chunks(chunks: list[str]|str, terms: Term|TermCollection = TERMS_ALL) -> dict[str, list[int]]:
+def search_chunks(chunks: list[str]|dict[int, str], terms: Term|TermCollection = TERMS_ALL, *,
+                  save_path: str | None = None, overwrite: bool = False) -> dict[str, list[int]]:
     '''
     Search the given markdown chunks for the given terms. Returns a list of indices, where each index
     indicates the position of the chunk where the term was found.
 
     Parameters
     ----------
-    chunks : list[str]|str
-        The markdown chunks to search, either as a list of md content, or the path to a folder containing md files.
+    chunks : dict[int, str]|str|list[str]
+        Either:
+        - A list of chunk markdown content, sorted by chunk index (as returned by `chunks_list`). In this case, chunk indices are inferred from the position in the list (i.e. index 0 corresponds to chunk-0.md).
+        - A dictionary where the keys are chunk indices and the values are the chunk markdown content.
     terms : Term | TermCollection
         The term or collection of terms to search for.
+    save_path : str | None
+        The path to save the search results to, as a json file. If None, results will not be saved.
+    overwrite : bool
+        Whether to overwrite existing search results at `save_path`. If False and a file already exists at `save_path`, the function will skip searching and return the existing results.
+        Only relevant if `save_path` is not None.
 
     Returns
     -------
     dict[str, list[int]]
         A dictionary where the keys are term aliases and the values are lists of chunk indices where the term was found.
     '''
-    if isinstance(chunks, str):
-        if os.path.isfile(chunks):
-            chunks = [open(chunks).read()]
-        elif os.path.isdir(chunks):
-            chunks = [open(f).read() for f in os.listdir(chunks) if f.endswith('.md')]
-        else:
-            raise ValueError(f'chunks is not a file or directory: {chunks}')
+    if isinstance(chunks, list):
+        chunks_dict = {i: chunk for i, chunk in enumerate(chunks)}  # have to assume pre-sorted
+    elif isinstance(chunks, dict):
+        chunks_dict = chunks
+    elif isinstance(chunks, str) and os.path.isdir(chunks):
+        chunks_dict = {int(f.split('-')[1].split('.')[0]): open(os.path.join(chunks, f)).read() for f in os.listdir(chunks) if f.endswith('.md')}
+    else:
+        raise ValueError(f'chunks must be either a list of strings or a dictionary of int: str. Got {type(chunks)}')
+
+    chunks_dict = dict(sorted(chunks_dict.items()))  # sort dict by keys (chunk indices)
 
     if isinstance(terms, Term):
         terms = [terms]
     results = {}
 
     for term in terms:
-        results[term.alias] = [i for i, chunk in enumerate(chunks) if re.search(term.regex, chunk, re.I)]
+        results[term.alias] = [i for i, chunk in chunks_dict.items() if re.search(term.regex, chunk, re.I)]
         logger_llm.debug(f'SEARCHED for {term.alias}. Found in chunks: {results[term.alias]}')
+    if save_path is not None:
+        if not overwrite and os.path.isfile(save_path):
+            logger_llm.debug(f'SEARCH NOT SAVED. overwrite=False, file exists: {save_path}')
+        else:
+            with open(save_path, 'w') as f:
+                json.dump(results, f, indent=4)
+            logger_llm.debug(f'SEARCH SAVED to {save_path}.')
 
     return results
+
+
+def md_dir_contents(yield_level: Literal['report', 'chunk_folder', 'chunk']) -> Iterable[str]:
+    '''
+    Generator that yields the paths of all markdown files/directories for all companies and report types.
+    '''
+    for co in os.listdir(os.path.join(DATA_DIR, 'md')):
+        co_dir = os.path.join(DATA_DIR, 'md', co)
+        if not os.path.isdir(co_dir):
+            continue
+        for report_type in os.listdir(co_dir):
+            report_type_dir = os.path.join(co_dir, report_type)
+            if not os.path.isdir(report_type_dir):
+                continue
+            for report in os.listdir(report_type_dir):
+                report = os.path.join(report_type_dir, report)
+
+                if yield_level == 'report':
+                    if report.endswith('.md'):
+                        yield report
+
+                elif yield_level == 'chunk_folder':
+                    if os.path.isdir(report):
+                        yield report
+
+                elif yield_level == 'chunk':
+                    if os.path.isdir(report):
+                        for md_file in os.listdir(report):
+                            if md_file.endswith('.md'):
+                                yield os.path.join(report, md_file)
+                                
+                else:
+                    raise ValueError(f"yield_level must be one of 'report', 'chunk_folder', or 'chunk'. Got {yield_level}")
+
+def file_co_rp_name(file_path) -> tuple[str|None, str|None, str|None]:
+    '''
+    Get the company, report type, and report name from a given filepath in the data directory.
+    
+    Parameters
+    ----------
+    file_path : str
+        The path of the file to extract the company, report type, and report name from.
+    
+    Returns
+    -------
+    tuple[str|None, str|None, str|None]
+        A tuple containing the company, report type, and report name, in that order. 
+        If any of these cannot be extracted from the file path, the corresponding value in the tuple will be None.
+    '''
+    flist = file_path.replace(DATA_DIR + os.path.sep, '').split(os.path.sep)
+    if len(flist) < 4:
+        flist += [None] * (4 - len(flist))  # Pad with None if not enough elements
+    return flist[1], flist[2], flist[3]
+
+def chunks_list(chunks_folder:str) -> list[str]:
+    '''
+    Get the markdown content of all chunk files in the given directory, as a sorted list.
+    List is sorted by chunk index, which is extracted from the file name (assumes file names are in the format 'chunk-{index}.md').
+
+    Parameters
+    ----------
+    chunks_folder : str
+        The path to the directory containing the chunk files.
+
+    Returns
+    -------
+    list[str]
+        A list of the markdown content of all chunk files in the given directory.
+    '''
+    if not os.path.isdir(chunks_folder):
+        raise ValueError(f'{chunks_folder} is not a directory')
+    
+    chunk_files = [f for f in os.listdir(chunks_folder) if f.endswith('.md')]
+    chunk_files.sort(key=lambda x: int(x.split('-')[1].split('.')[0]))  # Sort by chunk index
+    return [open(os.path.join(chunks_folder, f)).read() for f in chunk_files]

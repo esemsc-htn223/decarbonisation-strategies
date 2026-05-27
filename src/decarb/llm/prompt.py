@@ -1,13 +1,14 @@
 from typing import Iterable, Literal
+import os
 
-from ..companies import Company
+from ..companies import Company, company_aliases
 from ..regex.terms import Term
-from ..util import REPORT_TYPES_LONG
+from ..util import REPORT_TYPES_LONG, logger_llm
 
 def construct_extracts(
         chunks:Iterable[str], chunk_inds:Iterable[int], 
         overlap_strategy:Literal["before", "after", "both", ]|None = None,
-        overlap_amount:float = 0.5
+        overlap_amount:float = 0.2
 ) -> str:
     '''
     Construct the extracts to include in the prompt, based on the given chunks and chunk indices, and the specified overlap strategy and amount.
@@ -24,7 +25,7 @@ def construct_extracts(
         If None (the default), no additional context will be included.
     overlap_amount : float, optional
         The amount of text to include from the adjacent chunk(s), as a proportion of the chunk.
-        Defaults to 0.5 (i.e., half the adjacent chunk(s)). Only has an effect if overlap_strategy is not None.
+        Defaults to 0.2 (i.e., a fifth of the adjacent chunk(s)). Only has an effect if overlap_strategy is not None.
     
     Returns
     -------
@@ -56,7 +57,8 @@ def construct_prompt(
         company:str|Company, report_type:str, year:int|str, term:str|Term, 
         chunks:Iterable[str], chunk_inds:Iterable[int], 
         overlap_strategy:Literal["before", "after", "both", ]|None = None,
-        overlap_amount:float = 0.5
+        overlap_amount:float = 0.2,
+        save_path:str|None = None, overwrite:bool = False
 ):
     '''
     Construct a prompt to pass to the LLM, including task description, output format
@@ -85,7 +87,7 @@ def construct_prompt(
         If None (the default), no additional context will be included.
     overlap_amount : float, optional
         The amount of text to include from the adjacent chunk(s), as a proportion of the chunk.
-        Defaults to 0.5 (i.e., half the adjacent chunk(s)). Only has an effect if overlap_strategy is not None.
+        Defaults to 0.2 (i.e., a fifth of the adjacent chunk(s)). Only has an effect if overlap_strategy is not None.
     
     Returns
     -------
@@ -94,7 +96,7 @@ def construct_prompt(
     '''
 
     if isinstance(company, str):
-        co_alias = company
+        co_alias = company_aliases.get(company.lower(), company)
     elif isinstance(company, Company):
         co_alias = company.alias
     else:
@@ -102,21 +104,23 @@ def construct_prompt(
     
     report_alias = REPORT_TYPES_LONG.get(report_type, report_type.replace('-', ' '))
     
-    chunks_str = construct_extracts(chunks, chunk_inds, overlap_strategy, overlap_amount)
+    chunks_str = construct_extracts(
+        chunks=chunks, chunk_inds=chunk_inds, 
+        overlap_strategy=overlap_strategy, overlap_amount=overlap_amount
+    )
     
-    overlap_info = ""
+    overlap_info = "\n"
     if overlap_strategy is not None:
-        overlap_info = f"Note, extracts include {overlap_amount:.0%} of"
+        overlap_info += f"Note, extracts include {overlap_amount:.0%} of"
         if overlap_strategy in ['before', 'both']:
             overlap_info += " the previous "
         if overlap_strategy in ['after', 'both']:
             if overlap_strategy in ['both']:
-                overlap_info += " and"
+                overlap_info += "and"
             overlap_info += " following section"
             if overlap_strategy in ['both']:
                 overlap_info += "s"
-        overlap_info += f" of the report to provide additional context. As such, some information may be repeated. Additionally, OCR errors may result in some incorrect text or formatting in the extracts.\n\n"
-
+        overlap_info += f" of the report to provide additional context. OCR errors may result in some incorrect text or formatting.\n"
 
     prompt = f'''The following extracts have been taken from {co_alias}'s {year} {report_alias} and all relate to {term.prompt_alias}. 
 
@@ -125,23 +129,32 @@ Use the contained information to answer the following questions:
 2. "What key commitments has {co_alias} made to {term.prompt_alias}?"
 3. "At what stage of implementation is {term.prompt_alias}?"
 4. "How mature does {co_alias} consider {term.prompt_alias} to be?"
-
 {overlap_info}
-
 Answer in the following JSON format, with only the JSON and no additional text:
 {{
     "sentiment": float,  # sentiment towards {term.prompt_alias}, quantified on a numerical scale -1 to 1, where -1 is totally negative, 0 is neutral, and 1 is totally positive.
     "key-commitments": list[str],  # key extracts/quotes showing commitments towards {term.prompt_alias}
     "stage": Literal["commercial-deployment", "demonstration", "pilot", "research and development", "unclear"],  # stage of {term.prompt_alias}
     "maturity": Literal["emerging", "established", "phasing-out", "unclear"]  # maturity of {term.prompt_alias}
+    "notes": str  # any additional notes or caveats about the company's stance towards {term.prompt_alias}, or the quality of the extracts
 }}
 
 
 # Extracts:
----------
-
-{chunks_str}
-'''
+-----------
+{chunks_str}'''
+    
+    logger_llm.debug(f'PROMPT CONSTRUCTED: {co_alias} - {report_alias} - {term.prompt_alias} - {len(chunks)} chunks, indices {chunk_inds}, overlap_strategy={overlap_strategy}, overlap_amount={overlap_amount}')
+    if save_path is not None:
+        fname = os.path.basename(save_path)
+        if os.path.exists(save_path) and not overwrite:
+            logger_llm.debug(f'PROMPT NOT SAVED: {fname} overwrite=False, json present at {save_path}')
+        else:
+            os.makedirs(os.path.dirname(save_path), exist_ok=True)
+            with open(save_path, 'w') as f:
+                f.write(prompt)
+            logger_llm.debug(f'PROMPT SAVED: {fname} at {save_path}')
+    else:
+        logger_llm.debug(f'PROMPT NOT SAVED: No save_path provided.')
     
     return prompt
-
