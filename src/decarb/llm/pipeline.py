@@ -6,7 +6,7 @@ from typing import Iterable, Any, Literal
 import json
 from tqdm import tqdm
 
-from .rag import search_chunks, pdf_to_md, chunk_md, md_dir_contents, file_co_rp_name
+from .rag import search_chunks, pdf_to_md, chunk_md, md_dir_contents, file_co_rp_name, chunks_list
 from .prompt import construct_prompt
 from ..companies import Company, COS, company_aliases
 from ..util import REPORT_TYPES_SHORT, DATA_DIR, OUT_DIR, logger_llm
@@ -193,7 +193,7 @@ def stage_draft(terms: TermCollection=TERMS_ALL, *,
                                 pbar.update(1)
                                 continue
                             
-                            chunks = [open(os.path.join(chunks_path, chunk)).read() for chunk in os.listdir(chunks_path) if chunk.startswith('chunk-') and chunk.endswith('.md')]
+                            chunks = chunks_list(chunks_path)
                             
                             construct_prompt(
                                 company=co, report_type=report_type, year=year, term=term,
