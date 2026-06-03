@@ -7,7 +7,7 @@ import pymupdf
 from typing import Iterable
 
 from .terms import TermCollection, TERMS_ALL
-from ..companies import Company
+from ..companies import Company, CompanyCollection
 from ..plotting import plot_comparison
 from ..util import REPORT_TYPES_SHORT
 
@@ -92,7 +92,7 @@ def search_files(
     return out.sort_index()
 
 
-def regex_pipeline(terms: TermCollection, cos: Iterable[Company], *, 
+def regex_pipeline(terms: TermCollection, cos: CompanyCollection, *, 
                  count_type: str = 'all', norm_type: str = 'words',
                  reprocess: bool = False, save_csv: bool = True,
                  plot: bool = False, save_plots: bool = True,
@@ -115,22 +115,22 @@ def regex_pipeline(terms: TermCollection, cos: Iterable[Company], *,
             for report_type in REPORT_TYPES_SHORT:
                 reports_folder = os.path.join(co.raw_folder, report_type)
 
-                out_fname_normed = os.path.join(terms.folder, 'mentions', f'{co.foldername}-{REPORT_TYPES_SHORT[report_type]}.csv')
-                out_fname_unnormed = os.path.join(terms.folder, 'mentions-unnormed', f'{co.foldername}-{REPORT_TYPES_SHORT[report_type]}.csv')
+                out_fname_normed = os.path.join(terms.folder, 'mentions', f'{co.folder_name}-{REPORT_TYPES_SHORT[report_type]}.csv')
+                out_fname_unnormed = os.path.join(terms.folder, 'mentions-unnormed', f'{co.folder_name}-{REPORT_TYPES_SHORT[report_type]}.csv')
 
                 if reprocess or not os.path.exists(out_fname_normed):
-                    dfs[f'{co.foldername}-{REPORT_TYPES_SHORT[report_type]}'] = search_files(reports_folder, terms.terms, norm=True, norm_type=norm_type, count_type=count_type, year_index=True)
+                    dfs[f'{co.folder_name}-{REPORT_TYPES_SHORT[report_type]}'] = search_files(reports_folder, terms.terms, norm=True, norm_type=norm_type, count_type=count_type, year_index=True)
                     if save_csv:
-                        dfs[f'{co.foldername}-{REPORT_TYPES_SHORT[report_type]}'].to_csv(out_fname_normed)
+                        dfs[f'{co.folder_name}-{REPORT_TYPES_SHORT[report_type]}'].to_csv(out_fname_normed)
                 else:
-                    dfs[f'{co.foldername}-{REPORT_TYPES_SHORT[report_type]}'] = pd.read_csv(out_fname_normed, index_col=0)
+                    dfs[f'{co.folder_name}-{REPORT_TYPES_SHORT[report_type]}'] = pd.read_csv(out_fname_normed, index_col=0)
 
                 if reprocess or not os.path.exists(out_fname_unnormed):
-                    dfs_unnormed[f'{co.foldername}-{REPORT_TYPES_SHORT[report_type]}'] = search_files(reports_folder, terms.terms, norm=False, norm_type=None, count_type=count_type, year_index=True)
+                    dfs_unnormed[f'{co.folder_name}-{REPORT_TYPES_SHORT[report_type]}'] = search_files(reports_folder, terms.terms, norm=False, norm_type=None, count_type=count_type, year_index=True)
                     if save_csv:
-                        dfs_unnormed[f'{co.foldername}-{REPORT_TYPES_SHORT[report_type]}'].to_csv(out_fname_unnormed)
+                        dfs_unnormed[f'{co.folder_name}-{REPORT_TYPES_SHORT[report_type]}'].to_csv(out_fname_unnormed)
                 else:
-                    dfs_unnormed[f'{co.foldername}-{REPORT_TYPES_SHORT[report_type]}'] = pd.read_csv(out_fname_unnormed, index_col=0)
+                    dfs_unnormed[f'{co.folder_name}-{REPORT_TYPES_SHORT[report_type]}'] = pd.read_csv(out_fname_unnormed, index_col=0)
 
         out['dfs'] = dfs
         out['dfs_unnormed'] = dfs_unnormed

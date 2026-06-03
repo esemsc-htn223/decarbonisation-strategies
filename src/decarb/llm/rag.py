@@ -1,7 +1,7 @@
 import pymupdf4llm
 from ..companies import Company
 from ..regex.terms import Term, TermCollection, TERMS_ALL
-from ..util import logger_llm, DATA_DIR
+from ..util import logger_llm, DATA_DIR, REPORT_TYPES_SHORT, COMPANIES_DIR
 
 
 import os
@@ -47,6 +47,59 @@ def tidy_md(md:str):
     tidy_md = re.sub(r'(-)\1{3,}', r'\1\1\1', tidy_md) # limit repeated - to 3
     tidy_md = re.sub(r'\n{3,}', r'\n\n', tidy_md) # limit repeated \n to 2
     return tidy_md
+
+def pdf_to_md(pdf_path:str, *,
+              save:bool = True,
+              save_path:str|None = None, 
+              overwrite:bool=False) -> str:
+    '''
+    Convert the given pdf to markdown.
+
+    Parameters
+    ----------
+    pdf_path : str
+        The path to the pdf to convert.
+    save : bool
+        Whether to save the converted markdown as a file. If False, the markdown content will be returned as a string.
+    save_path : str | None
+        The path to save the converted markdown file to. 
+        If None, markdown will be saved in the md directory, with the same name but with a .md extension.
+    overwrite : bool
+        Whether to overwrite existing markdown files. If False and a markdown file already exists at `save_path`, the function will skip conversion and return the existing markdown content.
+
+    Returns
+    -------
+    str
+        If save=True, the directory where the chunked markdown files are saved. Otherwise, the markdown content as a string.
+    '''
+    # get default save dir
+    if save and save_path is None:
+        save_path = pdf_path.replace('.pdf', '.md')
+
+    if not overwrite and os.path.isfile(save_path):
+        logger_llm.debug(f'NOT CONVERTED: "{os.path.basename(pdf_path)}". overwrite=False, md file exists. pdf path: {pdf_path}')
+        if save:
+            return save_path
+        else:
+            return open(save_path).read()
+    try:
+        md = tidy_md(pymupdf4llm.to_markdown(pdf_path))
+    except pymupdf.mupdf.FzErrorLimit as e:
+        logger_llm.error(f'mupdf error - attempting without OCR. Full error: {type(e).__name__}: {e}')
+        try:
+            md = tidy_md(pymupdf4llm.to_markdown(pdf_path, use_ocr=False))
+        except Exception as e2:
+            logger_llm.error(f'ERROR mupdf error - even without OCR. Full error: {type(e2).__name__}: {e2}')
+            raise
+    logger_llm.debug(f'CONVERTED "{os.path.basename(pdf_path)}". len: {len(md)}. pdf path: {pdf_path}.')
+    
+    if save:
+        with open(save_path, 'w') as f:
+            f.write(md)
+        logger_llm.debug(f'MD SAVED "{os.path.basename(save_path)}". full path: {save_path}. pdf path: {pdf_path}.')
+        return save_path
+    else:
+        return md
 
 def chunk_md(md:str, *, 
              max_chunk_size:int=MAX_CHUNK_SIZE, 
@@ -151,59 +204,6 @@ def chunk_md(md:str, *,
     
     return out
 
-def pdf_to_md(pdf_path:str, *,
-              save:bool = True,
-              save_path:str|None = None, 
-              overwrite:bool=False) -> str:
-    '''
-    Convert the given pdf to markdown.
-
-    Parameters
-    ----------
-    pdf_path : str
-        The path to the pdf to convert.
-    save : bool
-        Whether to save the converted markdown as a file. If False, the markdown content will be returned as a string.
-    save_path : str | None
-        The path to save the converted markdown file to. 
-        If None, markdown will be saved in the md directory, with the same name but with a .md extension.
-    overwrite : bool
-        Whether to overwrite existing markdown files. If False and a markdown file already exists at `save_path`, the function will skip conversion and return the existing markdown content.
-
-    Returns
-    -------
-    str
-        If save=True, the directory where the chunked markdown files are saved. Otherwise, the markdown content as a string.
-    '''
-    # get default save dir
-    if save_path is None and save:
-        save_path = pdf_path.replace(os.path.join('data', 'raw'), os.path.join('data', 'md')).replace('.pdf', '.md')
-
-    if not overwrite and os.path.isfile(save_path):
-        logger_llm.debug(f'NOT CONVERTED: "{os.path.basename(pdf_path)}". overwrite=False, chunk files exist. pdf path: {pdf_path}')
-        if save:
-            return save_path
-        else:
-            return open(save_path).read()
-    try:
-        md = tidy_md(pymupdf4llm.to_markdown(pdf_path))
-    except pymupdf.mupdf.FzErrorLimit as e:
-        logger_llm.error(f'mupdf error - attempting without OCR. Full error: {type(e).__name__}: {e}')
-        try:
-            md = tidy_md(pymupdf4llm.to_markdown(pdf_path, use_ocr=False))
-        except Exception as e2:
-            logger_llm.error(f'ERROR mupdf error - even without OCR. Full error: {type(e2).__name__}: {e2}')
-            raise
-    logger_llm.debug(f'CONVERTED "{os.path.basename(pdf_path)}". len: {len(md)}. pdf path: {pdf_path}.')
-    
-    if save:
-        with open(save_path, 'w') as f:
-            f.write(md)
-        logger_llm.debug(f'MD SAVED "{os.path.basename(save_path)}". full path: {save_path}. pdf path: {pdf_path}.')
-        return save_path
-    else:
-        return md
-
 def co_pdfs_to_md(co: Company, report_type: str, *, overwrite: bool = False, **chunk_kwargs) -> list[str]:
     '''
     Convert the pdfs for the given company and report type to chunked markdown, 
@@ -293,59 +293,6 @@ def search_chunks(chunks: list[str]|dict[int, str], terms: Term|TermCollection =
             logger_llm.debug(f'SEARCH SAVED to {save_path}.')
 
     return results
-
-
-def md_dir_contents(yield_level: Literal['report', 'chunk_folder', 'chunk']) -> Iterable[str]:
-    '''
-    Generator that yields the paths of all markdown files/directories for all companies and report types.
-    '''
-    for co in os.listdir(os.path.join(DATA_DIR, 'md')):
-        co_dir = os.path.join(DATA_DIR, 'md', co)
-        if not os.path.isdir(co_dir):
-            continue
-        for report_type in os.listdir(co_dir):
-            report_type_dir = os.path.join(co_dir, report_type)
-            if not os.path.isdir(report_type_dir):
-                continue
-            for report in os.listdir(report_type_dir):
-                report = os.path.join(report_type_dir, report)
-
-                if yield_level == 'report':
-                    if report.endswith('.md'):
-                        yield report
-
-                elif yield_level == 'chunk_folder':
-                    if os.path.isdir(report):
-                        yield report
-
-                elif yield_level == 'chunk':
-                    if os.path.isdir(report):
-                        for md_file in os.listdir(report):
-                            if md_file.endswith('.md'):
-                                yield os.path.join(report, md_file)
-                                
-                else:
-                    raise ValueError(f"yield_level must be one of 'report', 'chunk_folder', or 'chunk'. Got {yield_level}")
-
-def file_co_rp_name(file_path) -> tuple[str|None, str|None, str|None]:
-    '''
-    Get the company, report type, and report name from a given filepath in the data directory.
-    
-    Parameters
-    ----------
-    file_path : str
-        The path of the file to extract the company, report type, and report name from.
-    
-    Returns
-    -------
-    tuple[str|None, str|None, str|None]
-        A tuple containing the company, report type, and report name, in that order. 
-        If any of these cannot be extracted from the file path, the corresponding value in the tuple will be None.
-    '''
-    flist = file_path.replace(DATA_DIR + os.path.sep, '').split(os.path.sep)
-    if len(flist) < 4:
-        flist += [None] * (4 - len(flist))  # Pad with None if not enough elements
-    return flist[1], flist[2], flist[3]
 
 def chunks_list(chunks_folder:str) -> list[str]:
     '''

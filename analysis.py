@@ -37,6 +37,7 @@ def _():
     from src.decarb.llm import rag
     from src.decarb.llm import inspection
     from src.decarb.llm import pipeline
+    from src.decarb.llm import prompt
 
     return (
         COS,
@@ -45,21 +46,25 @@ def _():
         TERMS_SUMMARY,
         companies,
         inspection,
+        json,
+        load_dotenv,
         mo,
         os,
         pd,
         pipeline,
         plot_comparison,
         plt,
+        prompt,
         rag,
         regex_pipeline,
         tiktoken,
+        util,
     )
 
 
 @app.cell
 def _(os):
-    _chunks_dir = 'data/md/shell/annual-report/shell-annual-report-2025'
+    _chunks_dir = 'data/companies/bp/annual-report/bp-annual-report-accounts-2007/chunks'
     chunks = [open(os.path.join(_chunks_dir, _f), 'r').read() for _f in os.listdir(_chunks_dir) if _f.endswith('.md')]
 
     {
@@ -93,12 +98,12 @@ def _(chunks, inspection, plt):
 
 
 @app.cell
-def _(TERMS_SIMPLE, chunks, inspection, rag):
-    terms = TERMS_SIMPLE
+def _(TERMS_ALL, chunks, inspection, rag):
+    terms = TERMS_ALL
 
     search_res = rag.search_chunks(chunks, terms)
     inspection.search_summary(chunks, terms, search_res=search_res)
-    return (search_res,)
+    return search_res, terms
 
 
 @app.cell
@@ -111,7 +116,7 @@ def _(chunks, inspection, plt, search_res):
 
 @app.cell
 def _(pipeline):
-    pipeline.stage_convert(overwrite=False)
+    pipeline.stage_convert(overwrite=False, progress_bar=True)
     return
 
 
@@ -134,9 +139,8 @@ def _(pipeline):
 
 
 @app.cell
-def _(TERMS_ALL, companies, os, pd, tiktoken):
+def _(companies, os, pd, terms, tiktoken, util):
     # count number of md docs in data/md
-    prompts_dir = os.path.join(TERMS_ALL.folder, 'prompts')
 
     # count total no. tokens
     encoding = tiktoken.get_encoding("cl100k_base")
@@ -163,31 +167,33 @@ def _(TERMS_ALL, companies, os, pd, tiktoken):
     'nuclear_fusion':'Nuclear fusion'}
 
     # add to dataframe in loop below instead of tokens dict
-    for co in os.listdir(prompts_dir):
-        co_dir = os.path.join(prompts_dir, co)
+    for co in os.listdir(util.COMPANIES_DIR):
+        co_dir = os.path.join(util.COMPANIES_DIR, co)
         if not os.path.isdir(co_dir):
             continue
-    
-    
-        for report_type_foldername in os.listdir(co_dir):
-            report_type_dir = os.path.join(co_dir, report_type_foldername)
+
+        for report_type_folder_name in os.listdir(co_dir):
+            report_type_dir = os.path.join(co_dir, report_type_folder_name)
             if not os.path.isdir(report_type_dir):
                 continue
-        
-            for report_foldername in os.listdir(report_type_dir):
-                report_dir = os.path.join(report_type_dir, report_foldername)
+
+            for report_folder_name in os.listdir(report_type_dir):
+                report_dir = os.path.join(report_type_dir, report_folder_name)
+
                 if not os.path.isdir(report_dir):
                     continue
-            
-                for prompt_filename in os.listdir(report_dir):
+
+                prompts_dir = os.path.join(report_dir, terms.folder_name, 'prompts')
+
+                for prompt_filename in os.listdir(prompts_dir):
                     if not prompt_filename.endswith('.txt'):
                         continue
-                    with open(os.path.join(report_dir, prompt_filename), 'r') as f:
+                    with open(os.path.join(prompts_dir, prompt_filename), 'r') as f:
                         prompt_content = f.read()
                         num_tokens = len(encoding.encode(prompt_content))
-                        df_tokens['company'].append(companies.company_aliases.get(co, co))
-                        df_tokens['report_type'].append(report_type_foldername.split('-')[0].capitalize())
-                        df_tokens['report_year'].append(report_foldername)
+                        df_tokens['company'].append(companies.COMPANY_ALIASES.get(co, co))
+                        df_tokens['report_type'].append(report_type_folder_name.split('-')[0].capitalize())
+                        df_tokens['report_year'].append(report_folder_name)
                         df_tokens['technology'].append(term_map.get(prompt_filename.split('.')[0], prompt_filename.split('.')[0]))
                         df_tokens['num_tokens'].append(num_tokens)
                         df_tokens['length_chars'].append(len(prompt_content))
@@ -199,7 +205,7 @@ def _(TERMS_ALL, companies, os, pd, tiktoken):
     print(f'No. prompts: \n\t{len(df_tokens):,}')
     print(f'No. tokens to pass to model: \n\t{df_tokens["num_tokens"].sum():,}')
     print(f'Approx. cost (not accounting for header and metadata tokens):\n\t(batch, gpt-5.1) ${df_tokens["cost_batch_gpt5_1"].sum():.2f}\n\t(batch, gpt-5.4) ${df_tokens["cost_batch_gpt5_4"].sum():.2f}')
-    return (df_tokens,)
+    return df_tokens, prompts_dir
 
 
 @app.cell
@@ -254,22 +260,166 @@ def _(df_tokens):
 
 
 @app.cell
-def _(mo):
-    sample_response = {
-      "sentiment": 0.3,
-      "key-commitments": [
-        "The production facilities for these fields will mainly be powered by renewable energy from solar power offshore and hydroelectric power onshore.",
-        "In the first quarter of 2025, Shell subsidiary Savion achieved full commercial operation of two solar facilities in the USA: the 111 MW Martin County Solar Project in Kentucky... and the 100 MW Kiowa County Solar Project in Oklahoma.",
-        "In July 2025, Savion established Tango Holdings, LLC, a joint venture with a fund managed by Ares Infrastructure Opportunities. The venture will oversee 496 MW of solar capacity.",
-        "We enable renewable power generation by owning and participating in joint ventures for and operating solar plants, primarily in India, the USA and Europe.",
-        "Capex for five economic activities was assessed as taxonomy-aligned, including... electricity from solar.",
-        "Cutting emissions from oil and gas production in our Upstream business... by looking at ways to electrify our offshore oil facilities, including using wind and solar power to reduce operational emissions."
-      ],
-      "stage": "commercial-deployment",
-      "maturity": "established",
-      "notes": "Shell's stance on solar is pragmatic and financially-driven rather than expansionary. While solar is clearly at commercial-deployment scale (multiple operational GW-scale plants, taxonomy-aligned capex of $568M), the overall strategic direction shows deliberate portfolio reduction: Shell sold Italian solar projects, divested Cleantech Renewable Assets (India/SE Asia solar platform), transferred majority ownership of US solar assets to the Tango JV, and exited Madison Fields Solar. The framing is explicitly one of 'selectively develops renewable generation projects and reduces ownership as assets mature' and a shift 'from capital-intensive renewables development to a capital-light, trading-led, asset-backed model'. Solar is treated as established and mature enough to monetise and recycle capital from, rather than a growth priority. The moderately positive sentiment score reflects genuine operational commitment and ongoing capex, tempered by the clear strategic pivot away from ownership."
-    }
-    mo.accordion(sample_response)
+def _(os):
+    for root, dirs, files in os.walk('data/terms/all-terms/prompts/'):
+        for file in files:
+            if file.endswith('.txt'):
+                os.rename(os.path.join(root, file), os.path.join(root, file.replace('_', '-')))
+                print(file + ' -> ' + file.replace('_', '-'))
+    return file, root
+
+
+@app.cell
+def _(file, os, root):
+    os.path.join(root, file.replace('_', '-'))
+    return
+
+
+@app.cell
+def _(TERMS_ALL, os, prompt, prompts_dir):
+    _exclude = ['total', 'exxon', 'chevron']
+    _co_dirs = [os.path.join(prompts_dir, d) for d in os.listdir(prompts_dir) if os.path.isdir(os.path.join(prompts_dir, d)) and d not in _exclude]
+
+    prompt.create_openai_jsonl(co_dirs=_co_dirs, save_path=os.path.join(TERMS_ALL.folder, 'prompts', 'prompts.jsonl'), overwrite=True, return_data=False)
+    return
+
+
+@app.cell
+def _(TERMS_ALL, os, prompt, prompts_dir):
+    #_exclude = ['total', 'exxon', 'chevron']
+    #_co_dirs = [os.path.join(prompts_dir, d) for d in os.listdir(prompts_dir) if os.path.isdir(os.path.join(prompts_dir, d)) and d not in _exclude]
+    _include = ['exxon']
+    _co_dirs = [os.path.join(prompts_dir, d) for d in os.listdir(prompts_dir) if os.path.isdir(os.path.join(prompts_dir, d)) and d in _include]
+
+    test_jsonl = prompt.create_openai_jsonl(
+        co_dirs=_co_dirs, 
+        save_path=os.path.join(TERMS_ALL.folder, 'prompts', 'exxon-test.jsonl'),
+        model='gpt-4.1',
+        overwrite=True,
+        return_data=True
+    )
+    return (test_jsonl,)
+
+
+@app.cell
+def _(test_jsonl, tiktoken):
+    # get token estimate for test_jsonl using best estimate for gpt-4.1
+    tiktoken_encoding = tiktoken.get_encoding("cl100k_base")
+    num_tokens_test_jsonl = sum(len(tiktoken_encoding.encode(entry['body']['messages'][0]['content'])) for entry in test_jsonl)
+    print(f'Estimated number of tokens for test_jsonl: {num_tokens_test_jsonl:,}')
+    return
+
+
+@app.cell
+def _(TERMS_ALL, os, prompt):
+    batch_id = prompt.submit_openai_batch(
+       jsonl_path=os.path.join(TERMS_ALL.folder, 'prompts', 'exxon-test.jsonl'),
+       terms_dir=os.path.join(TERMS_ALL.folder)
+    )
+    #batch_id = 'batch_6a185de3bdc48190b5f1a02b6d20de32'
+    batch_id
+    return (batch_id,)
+
+
+@app.cell
+def _(TERMS_ALL, batch_id, os, prompt):
+    prompt.check_batch_status(
+        batch_id, 
+        dir_to_search=os.path.join(TERMS_ALL.folder)
+    )
+    return
+
+
+@app.cell
+def _(json, load_dotenv, mo):
+    from openai import OpenAI
+
+    load_dotenv()
+    client = OpenAI()
+
+    for line in client.files.content('file-V2nb8HDBHYMuDvoFZwrR1A').iter_lines():
+        _acc = mo.accordion(json.loads(line))
+        break
+
+    _acc
+    return (client,)
+
+
+@app.cell
+def _(client, json):
+    exxon_test_out = []
+    with open('out/test_output.jsonl', 'w') as _f:
+        for _line in client.files.content('file-EpvoDg9q4jE5xPikkq2ZGb').iter_lines():
+            exxon_test_out.append(json.loads(_line))
+            _f.write(_line + '\n')
+
+    exxon_test_out[:5]
+    return (exxon_test_out,)
+
+
+@app.cell
+def _(exxon_test_out, json, pd):
+
+    exxon_test_responses = []
+    for i, entry in enumerate(exxon_test_out):
+        _id = entry['custom_id']
+        _co, _rt, _yr, _tech = _id.split('_')
+        exxon_test_responses.append(json.loads(entry['response']['body']['choices'][0]['message']['content']))
+        exxon_test_responses[-1]['id'] = _id
+        exxon_test_responses[-1]['company'] = _co
+        exxon_test_responses[-1]['report-type'] = _rt
+        exxon_test_responses[-1]['year'] = _yr
+        exxon_test_responses[-1]['technology'] = _tech
+
+    df_exxon_test = pd.DataFrame(exxon_test_responses).set_index('id').sort_values(['report-type','technology', 'year'])
+
+    df_exxon_test
+    return (df_exxon_test,)
+
+
+@app.cell
+def _(TERMS_ALL):
+    TERMS_ALL[0].dash
+    return
+
+
+@app.cell
+def _(TERMS_ALL, df_exxon_test, plt):
+
+
+    term_fnames_to_term = {term.prompt_fname.replace('.txt', ''): term for term in TERMS_ALL}
+
+    _fig, _axs = plt.subplots(2,1, figsize=(12,10), sharey=True, sharex=True)
+    for _i, _rt in enumerate(df_exxon_test['report-type'].unique()):
+        for _tech in df_exxon_test['technology'].unique():
+            _df_tech = df_exxon_test[(df_exxon_test['report-type'] == _rt) & (df_exxon_test['technology'] == _tech)]
+            _df_tech['year'] = _df_tech['year'].astype(int)
+            _df_tech.sort_values('year', inplace=True)
+            term = term_fnames_to_term.get(_tech)
+            _axs[_i].plot(
+                _df_tech['year'], _df_tech['sentiment'], 
+                label=_tech, color = term.colour if term else 'k',
+                linestyle = term.dash if term else '-',
+                marker = 'x', alpha = 0.7
+            )
+
+        _axs[_i].set_title(_rt)
+        _axs[_i].set_xlabel('Report Year')
+        if _i == 0:
+            _axs[_i].set_ylabel('Sentiment')
+        _axs[_i].grid(axis = 'y')
+        _axs[_i].set_ylim(-1,1)
+        _axs[_i].tick_params(axis='x', rotation=45)
+
+    _fig.legend(*_axs[0].get_legend_handles_labels(), loc='upper center', ncol=17, bbox_to_anchor=(0.5, 0.0))
+    _fig.suptitle('Exxon - Technology Sentiment over Time')
+    _fig.tight_layout(rect=[0, 0.03, 1, 0.95])
+    plt.show()
+    return
+
+
+@app.cell
+def _():
     return
 
 

@@ -2,11 +2,31 @@ __all__ = ['logger', 'DATA_DIR', 'OUT_DIR']
 
 import logging
 import os
+from dataclasses import dataclass
+
+# Data directories
 DATA_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..', 'data'))
+if not os.path.exists(DATA_DIR):
+    os.makedirs(DATA_DIR)
+COMPANIES_DIR = os.path.join(DATA_DIR, 'companies')
+if not os.path.exists(COMPANIES_DIR):
+    os.makedirs(COMPANIES_DIR)
+TERMS_DIR = os.path.join(DATA_DIR, 'terms')
+if not os.path.exists(TERMS_DIR):
+    os.makedirs(TERMS_DIR)
 LOG_DIR = os.path.join(DATA_DIR, 'log')
 if not os.path.exists(LOG_DIR):
     os.makedirs(LOG_DIR)
+
+
 OUT_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..', 'out'))
+if not os.path.exists(OUT_DIR):
+    os.makedirs(OUT_DIR)
+
+
+
+
+REPORT_TYPES = {'annual-report', 'sustainability-report'}
 REPORT_TYPES_SHORT = {'annual-report': 'an', 'sustainability-report': 'sr'}
 REPORT_TYPES_LONG = {'annual-report': 'annual financial report', 'sustainability-report': 'sustainability report'}
 

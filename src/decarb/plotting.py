@@ -5,7 +5,7 @@ import numpy as np
 from typing import Iterable
 
 from .regex.terms import TermCollection, TERMS_ALL
-from .companies import Company, COS
+from .companies import Company, COS, CompanyCollection
 
 def plot_mentions(
     df: pd.DataFrame, 
@@ -74,15 +74,15 @@ def plot_rankings(
 def plot_comparison(
     dfs: dict[str, pd.DataFrame], 
     terms: TermCollection = TERMS_ALL, *,
-    cos: Iterable[Company] = COS, 
+    cos: CompanyCollection = COS, 
     rank: bool = False,
     rank_zero_fill: str = 'nan', rank_lines: bool = True,
     plot_n: str|None = 'words', normed_by: str|None = 'words',
     suptitle: str|None = None
 ):
 
-    years_an = sorted({int(y) for co in cos for y in dfs[co.foldername + '-an'].index})
-    years_sr = sorted({int(y) for co in cos for y in dfs[co.foldername + '-sr'].index})
+    years_an = sorted({int(y) for co in cos for y in dfs[co.folder_name + '-an'].index})
+    years_sr = sorted({int(y) for co in cos for y in dfs[co.folder_name + '-sr'].index})
 
     xmin_an, xmax_an = years_an[0], years_an[-1]
     xmin_sr, xmax_sr = years_sr[0], years_sr[-1]
@@ -95,19 +95,19 @@ def plot_comparison(
         axs1 = axs[i][0]
         axs2 = axs[i][1]
         if rank:
-            plot_rankings(dfs[co.foldername + '-an'], ax = axs1, terms = terms, lines=rank_lines, zero_fill=rank_zero_fill)
-            plot_rankings(dfs[co.foldername + '-sr'], ax = axs2, terms = terms, lines=rank_lines, zero_fill=rank_zero_fill)
+            plot_rankings(dfs[co.folder_name + '-an'], ax = axs1, terms = terms, lines=rank_lines, zero_fill=rank_zero_fill)
+            plot_rankings(dfs[co.folder_name + '-sr'], ax = axs2, terms = terms, lines=rank_lines, zero_fill=rank_zero_fill)
         else:
-            plot_mentions(dfs[co.foldername + '-an'], ax = axs1, terms = terms, plot_n=plot_n, normed_by=normed_by)
-            plot_mentions(dfs[co.foldername + '-sr'], ax = axs2, terms = terms, plot_n=plot_n, normed_by=normed_by)
+            plot_mentions(dfs[co.folder_name + '-an'], ax = axs1, terms = terms, plot_n=plot_n, normed_by=normed_by)
+            plot_mentions(dfs[co.folder_name + '-sr'], ax = axs2, terms = terms, plot_n=plot_n, normed_by=normed_by)
 
         axs1.set_xlim(xmin_an, xmax_an)
         axs2.set_xlim(xmin_sr, xmax_sr)
 
-        if xmin_an < dfs[co.foldername + '-an'].index.min(): axs1.axvspan(xmin_an, dfs[co.foldername + '-an'].index.min(), color='lightgrey', alpha=0.5, zorder=-1)
-        if xmax_an > dfs[co.foldername + '-an'].index.max(): axs1.axvspan(dfs[co.foldername + '-an'].index.max(), xmax_an, color='lightgrey', alpha=0.5, zorder=-1)
-        if xmin_sr < dfs[co.foldername + '-sr'].index.min(): axs2.axvspan(xmin_sr, dfs[co.foldername + '-sr'].index.min(), color='lightgrey', alpha=0.5, zorder=-1)
-        if xmax_sr > dfs[co.foldername + '-sr'].index.max(): axs2.axvspan(dfs[co.foldername + '-sr'].index.max(), xmax_sr, color='lightgrey', alpha=0.5, zorder=-1)
+        if xmin_an < dfs[co.folder_name + '-an'].index.min(): axs1.axvspan(xmin_an, dfs[co.folder_name + '-an'].index.min(), color='lightgrey', alpha=0.5, zorder=-1)
+        if xmax_an > dfs[co.folder_name + '-an'].index.max(): axs1.axvspan(dfs[co.folder_name + '-an'].index.max(), xmax_an, color='lightgrey', alpha=0.5, zorder=-1)
+        if xmin_sr < dfs[co.folder_name + '-sr'].index.min(): axs2.axvspan(xmin_sr, dfs[co.folder_name + '-sr'].index.min(), color='lightgrey', alpha=0.5, zorder=-1)
+        if xmax_sr > dfs[co.folder_name + '-sr'].index.max(): axs2.axvspan(dfs[co.folder_name + '-sr'].index.max(), xmax_sr, color='lightgrey', alpha=0.5, zorder=-1)
 
         if i == 0:
             axs1.set_title('Annual Reports')
@@ -140,7 +140,7 @@ def plot_comparison(
         alignment = 'center'
     )
     extra_labels = [mpl.patches.Patch(color='lightgrey', alpha=0.5, label='No data')]
-    if plot_n and 'n_' + plot_n in dfs[cos[0].foldername + '-an'] and not rank:
+    if plot_n and 'n_' + plot_n in dfs[cos[0].folder_name + '-an'] and not rank:
         extra_labels.append(plt.Line2D([0], [0], color = 'k', marker = '2', linestyle = 'None', label = f'Total {plot_n}'))
     fig.legend(
         handles = extra_labels,
@@ -164,7 +164,7 @@ def plot_comparison(
             offset = 0.09 if normed_by else 0.065
         x = axs1.get_position().x0 - offset
         y = axs1.get_position().y0 + (col_top - col_bot) / 2
-        fig.text(x, y, co.alias, ha='center', va='center', fontweight='light', fontsize = 16, rotation = 90,
+        fig.text(x, y, co.full_name, ha='center', va='center', fontweight='light', fontsize = 16, rotation = 90,
                  color = 'dimgrey')
         
 

@@ -6,7 +6,7 @@ from typing import Iterable
 from dataclasses import dataclass
 import uuid
 
-from ..util import DATA_DIR, logger
+from ..util import TERMS_DIR, logger
 
 @dataclass
 class Term:
@@ -25,7 +25,7 @@ class Term:
      def __post_init__(self):
           if self.prompt_alias is None:
                self.prompt_alias = self.alias
-          self.prompt_fname = self.alias.lower().replace(' ', '_').replace('(', '').replace(')', '') + '.txt'
+          self.prompt_fname = self.alias.lower().replace(' ', '-').replace('(', '').replace(')', '') + '.txt'
      
     
      def __str__(self):
@@ -44,7 +44,7 @@ class TermCollection:
           self.terms = list(terms)
           self.folder_name = folder_name.replace(' ', '-').lower()
 
-          self.folder = os.path.join(DATA_DIR, 'terms', self.folder_name)
+          self.folder = os.path.join(TERMS_DIR, self.folder_name)
 
           if not os.path.exists(self.folder):
                os.makedirs(self.folder)
@@ -53,9 +53,9 @@ class TermCollection:
                     for term in self.terms:
                          f.write(f'{term.alias}: {term.regex}\n')
 
-          self.uuid = uuid.uuid5(uuid.NAMESPACE_OID, ''.join([term.alias + term.regex for term in self.terms])).hex
+          self.uuid = 'terms-' + uuid.uuid5(uuid.NAMESPACE_OID, ''.join([term.alias + term.regex for term in self.terms])).hex
 
-          self.log('CREATED')
+          logger.debug(f'CREATED TermCollection: folder_name={self.folder_name}, uuid={self.uuid}, terms={[term.alias for term in self.terms]}')
 
      def __iter__(self):
           return iter(self.terms)
@@ -73,6 +73,12 @@ class TermCollection:
      def __len__(self):
            return len(self.terms)
 
+     def __repr__(self):
+          return f'TermCollection(folder_name={self.folder_name}, terms={[term.alias for term in self.terms]})'
+     
+     def __str__(self):
+          return self.folder_name
+
      def plot_colours(self):
           _fig, (_ax1, _ax2) = plt.subplots(nrows=2, figsize = (5, 6))
           for term in self.terms:
@@ -89,8 +95,6 @@ class TermCollection:
 
           return _fig
      
-     def log(self, message:str):
-          logger.debug(f'{self.uuid}: {message}')
 
 
 SOLAR_REGEX = r'''\b(solar\s+(power|energy|farm|park|plant|panel|cell|module|PV|photovoltaic|thermal|roof|rooftop|capacity|generation|project|investment|asset|portfolio|array|system|technology)|
