@@ -17,6 +17,231 @@ COMPANY_ALIASES = {
         'total': 'TotalEnergies'
     }
 
+
+class Report:
+    '''A report, identified by the path to its directory, or to a file within it. Provides properties to access the paths of each associated file, and whether the file exists.'''
+    def __init__(self, path: str):
+        '''
+        A report, identified by the path to its directory, or to a file within it.
+        Provides properties to access the paths of each associated file, and whether the file exists.
+
+        In general, properties with a leading underscore (e.g., _pdf_path) return the expected location of a file, without checking whether it actually exists, 
+        while properties without a leading underscore (e.g., pdf_path) return the path if the file exists, and None otherwise. Methods indexing specific chunks
+        will raise a ValueError if the requested chunk does not exist.
+
+        Parameters
+        ----------
+        path : str
+            The path to the report directory, or to a file within it. Expected structure of the
+            path is: COMPANIES_DIR/co/report_type/report_name/...
+        '''
+        # get company, report type, report name, and year from file path
+        file_mdata = file_metadata(path)
+        for entry in file_mdata:
+            if file_mdata[entry] is None:
+                raise ValueError(f'Could not extract {entry} from file path: {path}')
+            else:
+                setattr(self, entry, file_mdata[entry])
+        
+        # identify base folder
+        self.dir = os.path.join(COMPANIES_DIR, self.company.folder_name, self.report_type, self.report_name)
+        if not os.path.exists(self.dir):
+            raise ValueError(f'Base folder for report not found at expected location: {self.dir}')
+        
+        self._pdf_path = os.path.join(self.dir, f'{self.report_name}.pdf')
+        self._raw_path = self._pdf_path
+        self._md_path = os.path.join(self.dir, f'{self.report_name}.md')
+
+        if not os.path.exists(self._pdf_path) and not os.path.exists(self._md_path):
+            raise ValueError(f'One or both files for report not found at expected location: pdf exists: {os.path.exists(self._pdf_path)} @ {self._pdf_path}, md exists: {os.path.exists(self._md_path)} @ {self._md_path}')
+
+        self._chunks_dir = os.path.join(self.dir, 'chunks')
+
+    @property
+    def pdf_path(self):
+        '''Get the path to the PDF file for this report, if it exists. Otherwise, return None.'''
+        return self._pdf_path if os.path.exists(self._pdf_path) else None
+
+
+    @property
+    def raw_path(self):
+        '''Get the path to the PDF file for this report, if it exists. Otherwise, return None.'''
+        # alias for pdf_path
+        return self.pdf_path
+    
+    @property
+    def md_path(self):
+        '''Get the path to the markdown file for this report, if it exists. Otherwise, return None.'''
+        return self._md_path if os.path.exists(self._md_path) else None
+
+    @property
+    def chunks_dir(self):
+        '''Get the path to the chunks directory for this report, if it exists. Otherwise, return None.'''
+        return self._chunks_dir if os.path.exists(self._chunks_dir) else None
+    
+    @property
+    def chunk_paths(self) -> list[str]:
+        '''
+        Get the paths of all chunk files in the given directory, as a sorted list.
+        List is sorted by chunk index, which is extracted from the file name (assumes file names are in the format 'chunk-{index}.md').
+
+        Parameters
+        ----------
+        chunks_folder : str
+            The path to the directory containing the chunk files.
+
+        Returns
+        -------
+        list[str]
+            A list of the paths of all chunk files in the given directory.
+        '''
+        if self.chunks_dir is None:
+            raise ValueError(f'chunks_dir not found at expected location: {self._chunks_dir}')
+        
+        chunk_files = [f for f in os.listdir(self.chunks_dir) if f.endswith('.md') and f.startswith('chunk-')]
+        chunk_files.sort(key=lambda x: int(x.split('-')[1].split('.')[0]))  # Sort by chunk index
+        return [os.path.join(self.chunks_dir, f) for f in chunk_files]
+    
+    def _chunk_path(self, index: int) -> str:
+        '''The expected location of a chunk file for this report, given its index. Does not check whether the file actually exists.'''
+        return os.path.join(self.chunks_dir, f'chunk-{index}.md')
+    
+    def chunk_path(self, index: int) -> str:
+        '''Get the path to a specific chunk file, identified by its index, if it exists. Otherwise, return None.'''
+        chunk_path = self._chunk_path(index)
+        if not os.path.exists(chunk_path):
+            raise IndexError(f'Chunk index {index} not found for report {self.report_name} - no chunk file found at expected location: {chunk_path}')
+        return chunk_path
+    
+    @property
+    def n_chunks(self):
+        '''Number of chunk files for this report.'''
+        return sum(1 for f in os.listdir(self.chunks_dir) if f.endswith('.md') and f.startswith('chunk-')) if self.chunks_dir else 0
+
+    @property
+    def chunks(self) -> list[str]:
+        '''
+        Get the markdown content of all chunk files in the given directory, as a list.
+        List is sorted by chunk index, which is extracted from the file name (assumes file names are in the format 'chunk-{index}.md').
+
+        Parameters
+        ----------
+        chunks_folder : str
+            The path to the directory containing the chunk files.
+
+        Returns
+        -------
+        list[str]
+            A list of the markdown content of all chunk files in the given directory.
+        '''
+        return [open(chunk_file).read() for chunk_file in self.chunk_paths]
+
+    def chunk(self, index: int) -> str:
+        '''
+        Get the markdown content of a specific chunk file, identified by its index.
+
+        Parameters
+        ----------
+        index : int
+            The index of the chunk to retrieve.
+
+        Returns
+        -------
+        str
+            The markdown content of the specified chunk file.
+        
+        Raises
+        ------
+        ValueError
+            If the requested index is out of bounds.
+        '''
+        
+        if index >= self.n_chunks:
+            raise ValueError(f"Chunk index {index} is out of bounds (n_chunks={self.n_chunks})")
+        path = self.chunk_path(index)
+        if path is None:
+            raise ValueError(f'Chunk file for index {index} not found at expected location: {self._chunk_path(index)}')
+        return open(path).read()
+    
+    
+    def _term_dir(self, term_folder_name: str):
+        '''The expected location of the term directory for this report and term collection. Does not check whether the directory actually exists.'''
+        if not isinstance(term_folder_name, str):
+            try:
+                term_folder_name = term_folder_name.folder_name
+            except AttributeError:
+                raise ValueError(f'term_folder_name should be either a string or an object with a folder_name attribute. Got {type(term_folder_name)}')
+        return os.path.join(self.dir, term_folder_name) 
+    
+    def term_dir(self, term_folder_name: str):
+        '''Get the path to the term directory for this report and term collection, if it exists. Otherwise, return None.'''
+        term_folder_path = self._term_dir(term_folder_name)
+        return term_folder_path if os.path.exists(term_folder_path) else None
+    
+    
+    def _search_results_path(self, term_folder_name: str):
+        '''The expected location of the search results file for this report and term collection. Does not check whether the file actually exists.'''
+        return os.path.join(self._term_dir(term_folder_name), 'search-results.json')
+
+    def search_results_path(self, term_folder_name: str):
+        '''Get the path to the search results file for this report and term collection, if it exists. Otherwise, return None.'''
+        search_results_path = self._search_results_path(term_folder_name)
+        if not os.path.exists(search_results_path):
+            return None
+        return search_results_path
+    
+    
+    def _prompts_dir(self, term_folder_name: str):
+        '''The expected location of the prompts directory for this report and term collection. Does not check whether the directory actually exists.'''
+        return os.path.join(self._term_dir(term_folder_name), 'prompts')
+
+    def prompts_dir(self, term_folder_name: str):
+        '''Get the path to the prompts directory for this report and term collection, if it exists. Otherwise, return None.'''
+        prompts_dir = self._prompts_dir(term_folder_name)
+        if not os.path.exists(prompts_dir):
+            return None
+        return prompts_dir
+    
+    def prompt_paths(self, term_folder_name: str) -> list[str]:
+        '''Get the paths to all prompt files for this report and term collection, if they exist. Otherwise, raises a ValueError.'''
+        prompts_dir = self.prompts_dir(term_folder_name)
+        if prompts_dir is None:
+            raise ValueError(f'Prompts directory not found for report {self.report_name} and term collection {term_folder_name} at expected location: {self._prompts_dir(term_folder_name)}')
+        prompt_files = [f for f in os.listdir(prompts_dir) if f.endswith('.txt')]
+        if len(prompt_files) == 0:
+            raise ValueError(f'No prompt files found for report {self.report_name} and term collection {term_folder_name} in prompts directory at expected location: {prompts_dir}')
+        return [os.path.join(prompts_dir, f) for f in prompt_files]
+    
+
+    def _prompt_path(self, term_folder_name: str, term_alias: str):
+        '''The expected location of the prompt file for this report, term collection, and term alias. Does not check whether the file actually exists.'''
+        return os.path.join(self._prompts_dir(term_folder_name), f'{term_alias}.txt')
+
+    def prompt_path(self, term_folder_name: str, term_alias: str):
+        '''Get the path to the prompt file for this report, term collection, and term alias, if it exists. Otherwise, return None.'''
+        prompt_path = self._prompt_path(term_folder_name, term_alias)
+        if not os.path.exists(prompt_path):
+            return None
+        return prompt_path
+    
+    def prompt(self, term_folder_name: str, term_alias: str):
+        '''Get the content of the prompt file for this report, term collection, and term alias, if it exists. Otherwise, return None.'''
+        prompt_path = self.prompt_path(term_folder_name, term_alias)
+        if prompt_path is None:
+            return None
+        return open(prompt_path).read()
+    
+    def _prompts_jsonl_path(self, term_folder_name: str):
+        '''The expected location of the prompts jsonl file for this report and term collection. Does not check whether the file actually exists.'''
+        return os.path.join(self._prompts_dir(term_folder_name), 'prompts.jsonl')
+    
+    def prompts_jsonl_path(self, term_folder_name: str):
+        '''Get the path to the prompts jsonl file for this report and term collection, if it exists. Otherwise, return None.'''
+        prompts_jsonl_path = self._prompts_jsonl_path(term_folder_name)
+        if not os.path.exists(prompts_jsonl_path):
+            return None
+        return prompts_jsonl_path
+            
 @dataclass
 class Company:
     folder_name: str
@@ -76,8 +301,30 @@ class Company:
 
     def __str__(self):
         return self.folder_name
+    
+    def reports(self, *, report_type:str = 'all') -> list[Report]:
+        '''
+        Get a list of Report objects for this company and report type.
 
-    def report_folders(self, report_type: str) -> list[str]:
+        Parameters
+        ----------
+        report_type : str, optional
+            The type of report to get (e.g., "annual-report" or "sustainability-report"). 
+            Must be a valid report type from REPORT_TYPES, or 'all' to get reports for all report types.
+            Defaults to 'all'.
+
+        Returns
+        -------
+        list[Report]
+            A list of Report objects for this company and report type.
+        '''
+        if report_type not in self.report_types and report_type.lower() != 'all':
+            raise ValueError(f'report_type should be one of {self.report_types}. Got {report_type}')
+        
+        report_folders = self.report_folders(report_type=report_type)
+        return [Report(path=report_folder) for report_folder in report_folders]
+
+    def report_folders(self, *, report_type: str = 'all') -> list[str]:
         '''
         Full paths to all report folders for this company and report type. 
         Report type can be 'all' to get folders for all report types.
@@ -98,7 +345,7 @@ class Company:
             if report_type.lower() == 'all':
                 report_folders = []
                 for rt in self.report_types:
-                    report_folders.extend(self.report_folders(rt))
+                    report_folders.extend(self.report_folders(report_type=rt))
                 return report_folders
             raise ValueError(f'report_type should be one of {self.report_types}. Got {report_type}')
         
@@ -108,61 +355,7 @@ class Company:
             raise ValueError(f'No folder found for {report_type} reports of company {self.folder_name} at expected location: {report_type_folder}')
         
         return [os.path.join(report_type_folder, fname) for fname in os.listdir(report_type_folder) if os.path.isdir(os.path.join(report_type_folder, fname))]
-    
-    def report_files(self, report_type: str, file_type: str) -> list[str]:
-        '''
-        Full paths to all files of a specific type for this company and report type.
-        Report type can  be 'all' to get files for all report types.
-        Note if the files are not present (e.g., they have not yet been created), this will return an empty list.
-        
-        Parameters
-        ----------
-        report_type : str
-            The type of report to get files for (e.g., "annual-report" or "sustainability-report"). 
-            Must be a valid report type from REPORT_TYPES, or 'all' to get files for all report types.
-        file_type : str
-            The type of file to get (e.g., "pdf", "raw" or "md"). Can be specified with or without a leading dot (e.g., "pdf" or ".pdf").
-            Accepted file types are:
-            - "pdf", ".pdf", "raw": PDF report files
-            - "md", ".md", "markdown": Markdown report files
-            - "chunks": folders containing markdown chunks for each report
-            - any valid term collection name (e.g., "all-terms"): folders containing search results, prompts, or jsonl files for the corresponding term collection.
-
-        Returns
-        -------
-        list[str]
-            A list of full paths to report files for this company and report type.
-        '''
-
-        file_type = file_type.lower()
-        file_type_suffixes = {
-            '.pdf': '.pdf',
-            'pdf': '.pdf',
-            'raw': '.pdf',
-
-            '.md': '.md',
-            'md': '.md',
-            'markdown': '.md'
-        }
-        
-        # report folders can contain chunks subfolder, or a terms folder if these chunks have been searched.
-        folders = ['chunks'] + [term_collection for term_collection in os.listdir(TERMS_DIR) if os.path.isdir(os.path.join(TERMS_DIR, term_collection))]
-        if file_type not in file_type_suffixes:
-            # determine if file_type is an allowed folder
-            if file_type in folders:
-                return [os.path.join(foldername, file_type) for foldername in self.report_folders(report_type) if os.path.exists(os.path.join(foldername, file_type))]
-            raise ValueError(f'file_type not found')
-        
-        if report_type not in self.report_types:
-            if report_type.lower() == 'all':
-                report_pdfs = []
-                for rt in self.report_types:
-                    report_pdfs.extend(self.report_pdfs(rt))
-                return report_pdfs
-            raise ValueError(f'report_type should be one of {self.report_types}. Got {report_type}')
-        
-        return [os.path.join(report_folder, filename) for report_folder in self.report_folders(report_type) for filename in os.listdir(report_folder) if filename.endswith(file_type_suffixes[file_type])]
-    
+     
 class CompanyCollection:
     def __init__(self, companies: Iterable[Company]|dict[str, str]):
         '''
@@ -205,16 +398,17 @@ class CompanyCollection:
     def __len__(self):
         return len(self.companies)
     
-    def report_folders(self, report_type: str) -> list[str]:
+    def report_folders(self, *, report_type: str = 'all') -> list[str]:
         '''
         Full paths to all report folders for all companies in this collection and report type. 
         Report type can be 'all' to get folders for all report types.
 
         Parameters
         ----------
-        report_type : str
+        report_type : str, optional
             The type of report to get folders for (e.g., "annual-report" or "sustainability-report"). 
             Must be a valid report type from REPORT_TYPES, or 'all' to get folders for all report types.
+            Defaults to 'all'.
 
         Returns
         -------
@@ -223,27 +417,19 @@ class CompanyCollection:
         '''
         report_folders = []
         for co in self.companies:
-            report_folders.extend(co.report_folders(report_type))
+            report_folders.extend(co.report_folders(report_type=report_type))
         return report_folders
     
-    def report_files(self, report_type: str, file_type: str) -> list[str]:
+    def reports(self, *, report_type: str = 'all') -> list[str]:
         '''
-        Full paths to all files of a specific type for all companies in this collection and report type.
-        Report type can  be 'all' to get files for all report types.
-        Note if the files are not present (e.g., they have not yet been created), this will return an empty list.
+        Get a list of Report objects for all companies in this collection and report type.
 
         Parameters
         ----------
-        report_type : str
+        report_type : str, optional
             The type of report to get files for (e.g., "annual-report" or "sustainability-report"). 
             Must be a valid report type from REPORT_TYPES, or 'all' to get files for all report types.
-        file_type : str
-            The type of file to get (e.g., "pdf", "raw" or "md"). Can be specified with or without a leading dot (e.g., "pdf" or ".pdf").
-            Accepted file types are:
-            - "pdf", ".pdf", "raw": PDF report files
-            - "md", ".md", "markdown": Markdown report files
-            - "chunks": folders containing markdown chunks for each report
-            - any valid term collection name (e.g., "all-terms"): folders containing search results, prompts, or jsonl files for the corresponding term collection.
+            Defaults to 'all'.
         
         Returns
         -------
@@ -252,7 +438,7 @@ class CompanyCollection:
         '''
         report_files = []
         for co in self.companies:
-            report_files.extend(co.report_files(report_type, file_type))
+            report_files.extend(co.reports(report_type=report_type))
         return report_files
 
 
@@ -353,7 +539,7 @@ def file_metadata(file_path:str) -> dict[str, str|Company|None]:
     ValueError
         If the company, report type, report name, or report year cannot be extracted from the file path.
     '''
-    flist = file_path.replace(COMPANIES_DIR + os.path.sep, '').split(os.path.sep)
+    flist = os.path.relpath(file_path, COMPANIES_DIR).split(os.path.sep)
     co = Company.from_folder_name(flist[0]) if len(flist) > 0 else None
     rt = flist[1] if len(flist) > 1 else None
     rp = flist[2] if len(flist) > 2 else None
@@ -368,7 +554,6 @@ def file_metadata(file_path:str) -> dict[str, str|Company|None]:
         'report_name': rp,
         'year': ry
     }
-
 
 ### Initialize company collection
 COS = CompanyCollection(COMPANY_ALIASES)
