@@ -30,6 +30,11 @@ class Term:
     
      def __str__(self):
           return self.alias
+     
+     def set_collection(self, collection: 'TermCollection'):
+          if hasattr(self, 'collection'):
+               raise ValueError(f'Term {self.alias} is already part of a collection. Cannot set collection again.')
+          self.collection = collection
     
     
 
@@ -40,6 +45,9 @@ class TermCollection:
           aliases = [term.alias for term in terms]
           if len(aliases) != len(set(aliases)):
                raise ValueError('All term aliases must be unique')
+
+          for term in terms:
+               term.set_collection(self)
 
           self.terms = list(terms)
           self.folder_name = folder_name.replace(' ', '-').lower()

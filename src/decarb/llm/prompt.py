@@ -1,4 +1,6 @@
-from typing import Iterable, Literal
+from dataclasses import dataclass
+import io
+from typing import Iterable, Literal, Iterator
 import os
 from dotenv import load_dotenv
 from openai import OpenAI
@@ -6,13 +8,18 @@ from pydantic import BaseModel, Field
 import instructor
 import json
 import time
+import uuid
+import warnings
+import tiktoken
 
-from ..companies import Company, COMPANY_ALIASES, file_metadata
-from ..regex.terms import Term
-from ..util import REPORT_TYPES_LONG, logger_llm, TERMS_DIR
+from ..companies import Company, COMPANY_ALIASES, Report, file_metadata
+from ..regex.terms import Term, TermCollection
+from ..util import OUT_DIR, REPORT_TYPES_LONG, logger_llm, TERMS_DIR
+
+DEFAULT_MODEL = 'gpt-5.1'
 
 def construct_extracts(
-        chunks:Iterable[str], chunk_inds:Iterable[int], 
+        report:Report, term:Term, *,
         overlap_strategy:Literal["before", "after", "both", ]|None = None,
         overlap_amount:float = 0.2
 ) -> str:
@@ -21,10 +28,10 @@ def construct_extracts(
     
     Parameters
     ----------
-    chunks : Iterable[str]
-        The chunks to construct the extracts from, as an iterable of strings.
-    chunk_inds : Iterable[int]
-        The indices of the chunks to construct the extracts from, as an iterable of ints. 
+    report : Report
+        The Report object containing the chunks to construct the extracts from, and the search results for the given term.
+    term : Term
+        The Term object containing the alias to use to retrieve the search results for the given term from the report.
     overlap_strategy : Literal["before", "after", "both", ]|None, optional
         Whether to include text from the preceeding or following chunk for each extract, or both.
         This is to provide additional context to the LLM, as sometimes relevant information may be split across chunk boundaries.
@@ -37,9 +44,23 @@ def construct_extracts(
     -------
     str
         The constructed extracts, as a string.
+
+    Raises
+    ------
+    FileNotFoundError
+        If no search results are found for the given term in the report, or if the `report.n_chunks` is 0.
     '''
+    search_results = report.search_results(term.collection)
+    if search_results is None:
+        raise FileNotFoundError(f'No search results found for term {term.prompt_alias} in report {report.report_name}. Cannot construct extracts.')
+    n_chunks = report.n_chunks
+    if n_chunks == 0:
+        raise FileNotFoundError(f'No chunks found for report {report.report_name}. Cannot construct extracts.')
+
+    chunk_inds = search_results[term.alias]
+    chunks = report.chunks
+
     extracts = []
-    n_chunks = len(chunks)
     for i, chunk_ind in enumerate(chunk_inds):
         extract = chunks[chunk_ind]
         
@@ -60,11 +81,15 @@ def construct_extracts(
     return "\n\n------------------\n\n".join(extracts)
 
 def construct_prompt(
-        company:str|Company, report_type:str, year:int|str, term:str|Term, 
-        chunks:Iterable[str], chunk_inds:Iterable[int], 
+        report:Report, term:Term,
+        *,
+        #company:str|Company, report_type:str, year:int|str, term:str|Term, 
+        #chunks:Iterable[str], chunk_inds:Iterable[int], 
         overlap_strategy:Literal["before", "after", "both", ]|None = None,
         overlap_amount:float = 0.2,
-        save_path:str|None = None, overwrite:bool = False
+        save:bool = True,
+        save_as:str|None = None, 
+        overwrite:bool = False
 ):
     '''
     Construct a prompt to pass to the LLM, including task description, output format
@@ -72,21 +97,10 @@ def construct_prompt(
     
     Parameters
     ----------
-    company : str or Company
-        The company the report relates to, either as a string (e.g., "Shell") or as a Company object.
-        If a Company object is passed, the company's full_name will be used in the prompt.
-    report_type : str
-        The type of report the extracts are taken from (e.g., "annual-report" or "sustainability-report"). 
-        This will be converted to a more reader-friendly format in the prompt using REPORT_TYPES_LONG (e.g., "annual financial report" or "sustainability report").
-    year : int or str
-        The year the report was published.
-    term : str or Term
-        The technology/term the extracts relate to, either as a string (e.g., "carbon capture") or as a Term object. 
-        If a Term object is passed, the term's prompt_alias will be used in the prompt.
-    chunks : Iterable[str]
-        The extracts to include in the prompt, as an iterable of strings.
-    chunk_inds : Iterable[int]
-        The indices of the extracts to include, as an iterable of ints. 
+    report : Report
+        The Report object containing the chunks to construct the extracts from, and the search results for the given term.
+    term : Term
+        The Term object containing the alias to use to retrieve the search results for the given term from the report.
     overlap_strategy : Literal["before", "after", "both", ]|None, optional
         Whether to include text from the preceeding or following chunk for each extract, or both.
         This is to provide additional context to the LLM, as sometimes relevant information may be split across chunk boundaries.
@@ -94,24 +108,28 @@ def construct_prompt(
     overlap_amount : float, optional
         The amount of text to include from the adjacent chunk(s), as a proportion of the chunk.
         Defaults to 0.2 (i.e., a fifth of the adjacent chunk(s)). Only has an effect if overlap_strategy is not None.
-    
+    save : bool, optional
+        Whether to save the constructed prompt as a text file in the report's term directory (or at the path specified by `save_as` if provided). Defaults to True.
+    save_as : str or None, optional
+        The path at which to save the constructed prompt. If None (the default), the prompt will be saved in the report's term directory. Only has an effect if `save` is True.
+    overwrite : bool, optional
+        Whether to overwrite an existing file at the save path. Defaults to False.
+
     Returns
     -------
     str
         The constructed prompt, as a string.
     '''
+    save_path = report._prompt_path(term.collection, term) if save_as is None else save_as
+    if not save_path.endswith('.txt'):
+        raise ValueError(f'save_as should be a path ending with .txt. Got {save_path}')
 
-    if isinstance(company, str):
-        co_alias = COMPANY_ALIASES.get(company.lower(), company)
-    elif isinstance(company, Company):
-        co_alias = company.full_name
-    else:
-        raise ValueError(f"company should be either the name of a company (as a str), or a Company object. Got {type(company)}")
-    
-    report_alias = REPORT_TYPES_LONG.get(report_type, report_type.replace('-', ' '))
+    co_alias = report.company.full_name
+    year = report.year    
+    report_alias = REPORT_TYPES_LONG.get(report.report_type, report.report_type.replace('-', ' '))
     
     chunks_str = construct_extracts(
-        chunks=chunks, chunk_inds=chunk_inds, 
+        report=report, term=term,
         overlap_strategy=overlap_strategy, overlap_amount=overlap_amount
     )
     
@@ -136,42 +154,35 @@ Use the contained information to answer the following questions:
 3. "At what stage of implementation is {term.prompt_alias}?"
 4. "How mature does {co_alias} consider {term.prompt_alias} to be?"
 
-Notes:
-- {overlap_info}
-- OCR errors may result in some incorrect text or formatting.
+{overlap_info}
 
 # Extracts:
 -----------
 {chunks_str}'''
     
-    logger_llm.debug(f'PROMPT CONSTRUCTED: {co_alias}_{report_alias}_{year}_{term.prompt_fname.replace(".txt", "")} - {len(chunks)} chunks, indices {chunk_inds}, overlap_strategy={overlap_strategy}, overlap_amount={overlap_amount}')
-    if save_path is not None:
+    logger_llm.debug(f'PROMPT CONSTRUCTED: {co_alias}_{report_alias}_{year}_{term.prompt_fname.replace(".txt", "")} - overlap_strategy={overlap_strategy}, overlap_amount={overlap_amount}')
+    if save:
         fname = os.path.basename(save_path)
         if os.path.exists(save_path) and not overwrite:
-            logger_llm.debug(f'PROMPT NOT SAVED: {fname} overwrite=False, json present at {save_path}')
+            logger_llm.debug(f'PROMPT NOT SAVED: {fname} overwrite=False, txt present at {save_path}')
         else:
             os.makedirs(os.path.dirname(save_path), exist_ok=True)
             with open(save_path, 'w') as f:
                 f.write(prompt)
             logger_llm.debug(f'PROMPT SAVED: {fname} at {save_path}')
     else:
-        logger_llm.debug(f'PROMPT NOT SAVED: No save_path provided.')
+        logger_llm.debug(f'PROMPT NOT SAVED: save=False.')
     
     return prompt
 
-def prompt_id(company:str|Company, report_type:str, year:int|str, term:str|Term) -> str:
+def prompt_id(report:Report, term:str|Term) -> str:
     '''
     Create a unique ID for a prompt based on the company, report type, year, and term.
     
     Parameters
     ----------
-    company : str or Company
-        The company the report relates to, either as a string (e.g., "Shell") or as a Company object.
-        If a Company object is passed, the company's full_name will be used in the ID.
-    report_type : str
-        The type of report the extracts are taken from (e.g., "annual-report" or "sustainability-report"). 
-    year : int or str
-        The year the report was published.
+    report : Report
+        The Report object containing the metadata to use to create the prompt ID.
     term : str or Term
         The technology/term the extracts relate to, either as a string (e.g., "carbon capture") or as a Term object. 
         If a Term object is passed, the term's prompt_alias will be used in the ID.
@@ -181,17 +192,6 @@ def prompt_id(company:str|Company, report_type:str, year:int|str, term:str|Term)
     str
         The generated prompt ID, in the format "{company}_{report_type}_{year}_{term}", with all values in lowercase and spaces replaced by hyphens.
     '''
-    if isinstance(company, str):
-        if company in COMPANY_ALIASES.values():
-            co_alias = list(COMPANY_ALIASES.keys())[list(COMPANY_ALIASES.values()).index(company)]  # get key from value if we have been provided a long name
-        else:
-            co_alias = company
-        co_alias = company
-    elif isinstance(company, Company):
-        co_alias = company.folder_name
-    else:
-        raise ValueError(f"company should be either the name of a company (as a str), or a Company object. Got {type(company)}")
-    
     if isinstance(term, str):
         term_alias = term
     elif isinstance(term, Term):
@@ -199,7 +199,7 @@ def prompt_id(company:str|Company, report_type:str, year:int|str, term:str|Term)
     else:
         raise ValueError(f"term should be either the name of a term (as a str), or a Term object. Got {type(term)}")
     
-    return f"{co_alias}_{report_type}_{year}_{term_alias}".lower().replace(' ', '-').replace('(', '').replace(')', '')
+    return f"{report.company.folder_name}_{report.report_type}_{report.year}_{term_alias}".lower().replace(' ', '-').replace('(', '').replace(')', '')
 
 class PromptResponse(BaseModel):
     sentiment: float = Field(
@@ -245,7 +245,7 @@ def make_strict_schema(schema: dict) -> dict:
 def analyse_one(
         prompt_file:str, 
         *, 
-        model:str = 'gpt-5.1', max_retries:int = 3,
+        model:str = DEFAULT_MODEL, max_retries:int = 3,
         save_path:str|None = None, overwrite:bool = False
 ) -> AnalysisRecord:
     '''
@@ -311,31 +311,20 @@ def analyse_one(
     return out
     
 def create_openai_jsonl(
-        *, 
-        file_paths:list[str]|None=None, report_dirs:list[str]|None=None, 
-        report_type_dir:list[str]|None=None, co_dirs:list[str]|None=None,
-        include_all:bool = False,
-        model:str = 'gpt-5.1',
-        save_path:str|None = None, overwrite:bool = False,
-        return_data:bool = True
+        prompt_paths:list[str],
+        *,
+        model:str = DEFAULT_MODEL,
+        save:bool = True, save_as:str|None = None, 
+        overwrite:bool = False,
+        return_type:Literal['fname', 'path', 'data', None] = 'path'
     )-> list[dict]:
     '''
     Create a jsonl file containing the prompts and metadata for analysis with OpenAI's API, based on the given file paths or directories.
 
     Parameters
     ----------
-    file_paths : list[str] | None, optional
-        A list of file paths to prompt text files to include in the jsonl. Each file should be a text file containing a prompt.
-    report_dirs : list[str] | None, optional
-        A list of directories containing report subdirectories to include in the jsonl. All .txt files in the report subdirectories will be included as prompts.
-    report_type_dir : list[str] | None, optional
-        A list of directories containing report type subdirectories (e.g., "annual-report", "sustaintability-report") to include in the jsonl. 
-        All .txt files in the report type subdirectories will be included as prompts.
-    co_dirs : list[str] | None, optional
-        A list of directories containing company subdirectories to include in the jsonl. All .txt files in the company subdirectories will be included as prompts.
-    include_all : bool, optional
-        Whether to include all prompts in the data directory. Defaults to False. If True, the above options will be ignored and 
-        all .txt files in the data directory and its subdirectories will be included as prompts.
+    prompt_paths : list[str]
+        A list of paths to prompt text files to include in the jsonl. Each file should be a text file containing a prompt.
     save_path : str | None, optional
         The path where the jsonl file should be saved. Defaults to None.
     overwrite : bool, optional
@@ -346,58 +335,60 @@ def create_openai_jsonl(
     list[dict]
         A list of dictionaries, each containing the metadata and prompt content for a single prompt, ready to be passed to OpenAI's API. If 
         save_path is provided and overwrite is True, the list will also be saved as a jsonl file at the specified path.
-    '''
-    if include_all:
-        # get all .txt files in data directory and subdirectories
-        file_paths = []
-        for root, dirs, files in os.walk(os.path.join(TERMS_DIR)):
-            for file in files:
-                if file.endswith('.txt'):
-                    if os.path.basename(file) == 'terms.txt':
-                        continue  # skip terms metadata file
-                    file_paths.append(os.path.join(root, file))
-    
-    elif file_paths is None:
-        file_paths = []
-        if report_dirs is not None:
-            for report_dir in report_dirs:
-                for root, dirs, files in os.walk(report_dir):
-                    for file in files:
-                        if file.endswith('.txt'):
-                            file_paths.append(os.path.join(root, file))
-        if report_type_dir is not None:
-            for root, dirs, files in os.walk(report_type_dir):
-                for file in files:
-                    if file.endswith('.txt'):
-                        file_paths.append(os.path.join(root, file))
-        if co_dirs is not None:
-            for co_dir in co_dirs:
-                for root, dirs, files in os.walk(co_dir):
-                    for file in files:
-                        if file.endswith('.txt'):
-                            file_paths.append(os.path.join(root, file))
-        else:
-            raise ValueError('If include_all is False, at least one of file_paths, report_dirs, report_type_dir, or co_dirs must be provided to specify which prompts to include. None of these were provided.')
 
+    Raises
+    ------
+    ValueError
+        If prompts from multiple term collections are provided, or if save_as is not a path ending with .jsonl.
+    '''
+    # preliminary checks to ensure we're not doing work for nothing
+    if return_type not in ['fname', 'path', 'data', None]:
+        raise ValueError(f'return_type should be one of "fname", "data", or None. Got {return_type}')
+
+    if save:
+        if save_as is None:
+            term_coll = os.path.basename(os.path.dirname(os.path.dirname(prompt_paths[0])))  # use first prompt path for collection. if we have multiple later, we raise an error so we can assume this is correct.
+            fname = uuid.uuid5(uuid.NAMESPACE_OID, ''.join(prompt_paths)).hex
+            save_as = os.path.join(TERMS_DIR, term_coll, 'prompts', f'{fname}.jsonl')
+        else:
+            if not save_as.endswith('.jsonl'):
+                raise ValueError(f'save_as should be a path ending with .jsonl. Got {save_as}')
+            fname = os.path.basename(save_as)
+        
+        if os.path.exists(save_as) and not overwrite:
+            logger_llm.debug(f'JSONL NOT SAVED: {fname} overwrite=False, file present at {save_as}')
+            save = False
+            if return_type is None:
+                return None
+            elif return_type == 'fname':
+                return fname
+            elif return_type == 'path':
+                return save_as
+            # only continue processing if we need to return data
+    
     # validate file paths
     valid_file_paths = []
-    for file_path in file_paths:
-        if os.path.isfile(file_path) and file_path.endswith('.txt'):
-            valid_file_paths.append(file_path)
+    for path in prompt_paths:
+        if os.path.isfile(path) and path.endswith('.txt'):
+            valid_file_paths.append(path)
         else:
-            logger_llm.warning(f'Invalid file path: {file_path}. Skipping.')
-    file_paths = valid_file_paths
+            logger_llm.warning(f'JSONL - INVALID PROMPT PATH: {path}. Skipping.')
+    prompt_paths = valid_file_paths
 
     # gather jsons in jsonl format
     data = []
     schema = make_strict_schema(PromptResponse.model_json_schema())
-    for file_path in file_paths:
+    term_collections = set()
+    for file_path in prompt_paths:
         with open(file_path, 'r') as f:
             prompt_content = f.read()
-        file_mdata = file_metadata(file_path)
         term = os.path.basename(file_path).split('.')[0]  # get term from filename
+        term_coll = os.path.basename(os.path.dirname(os.path.dirname(file_path)))  # get term collection from parent folder name
+        term_collections.add(term_coll)
+        if len(term_collections) > 1:
+            raise ValueError(f'Multiple TermCollections found in prompt_paths: {term_collections}. All prompts in a single batch must relate to the same TermCollection.')
         data.append({
-            'custom_id': prompt_id(file_mdata['company'], file_mdata['report_type'], file_mdata['year'], term),  # custom ID for OpenAI API
+            'custom_id': prompt_id(Report(file_path), term),  # custom ID for OpenAI API
             'method': 'POST',
             'url': '/v1/chat/completions',
             'body': {
@@ -413,66 +404,187 @@ def create_openai_jsonl(
                 }
             }
         })
-    logger_llm.debug(f'JSONL DATA CREATED: {len(data)} records created from {len(file_paths)} file paths.')
+    logger_llm.debug(f'JSONL DATA CREATED: {len(data)} records created from {len(prompt_paths)} file paths.')
 
     # write jsonl file
-    if save_path is not None:
-        fname = os.path.basename(save_path)
-        if os.path.exists(save_path) and not overwrite:
-            logger_llm.debug(f'JSONL NOT SAVED: {fname} overwrite=False, file present at {save_path}')
-        else:
-            os.makedirs(os.path.dirname(save_path), exist_ok=True)
-            with open(save_path, 'w') as f:
-                for record in data:
-                    f.write(json.dumps(record) + '\n')
-            logger_llm.debug(f'JSONL SAVED: {fname} at {save_path}')
+    if save:
+        os.makedirs(os.path.dirname(save_as), exist_ok=True)
+        with open(save_as, 'w') as f:
+            for record in data:
+                f.write(json.dumps(record) + '\n')
+        logger_llm.debug(f'JSONL SAVED: {fname} at {save_as}')
     
-    if return_data:
+    if return_type == 'data':
         return data
+    elif return_type == 'fname':
+        return fname
+    elif return_type == 'path':
+        return save_as
     else:
         return None
 
-def submit_openai_batch(
-        jsonl_path:str, *, 
-        terms_dir:str|None=None
-):
-    '''
-    Analyse the given prompts using the specified model, and return the responses.
+@dataclass
+class JSONLPortion:
+    portion: list[dict]
+    token_count: int
+    start_index: int
+    end_index: int
+
+    def __len__(self):
+        return len(self.portion)
     
+    def __getitem__(self, key):
+        return self.portion[key]
+    
+    def __repr__(self):
+        return f'JSONLPortion(start_index={self.start_index}, end_index={self.end_index}, token_count={self.token_count}, portion_len={len(self.portion)})'
+
+def jsonl_portions(
+        jsonl_path:str, 
+        max_tokens:int = 3_000,
+        encoding_name:str = 'cl100k_base',
+        save:bool = False, save_dir:str|None = None, overwrite:bool = False
+) -> Iterator[JSONLPortion]:
+    '''
+    Take a jsonl file and yield portions of it as lists of dictionaries, where each portion contains at 
+    most `max_tokens` tokens in total.
+
     Parameters
     ----------
     jsonl_path : str
-        The path to the JSONL data to submit to OpenAI's API.
-    terms_dir : str | None, optional
-        The path to the subfolder in the data directory containing the term files. If provided, the 
-        batch will be saved in the 'batches' subfolder as a JSON file with the batch ID as the filename.
-        Defaults to None.
+        The path to the jsonl file to portion.
+    max_tokens : int, optional
+        The maximum number of tokens that each portion should contain. Defaults to 3,000.
+    encoding_name : str, optional
+        The name of the encoding to use for token counting. Defaults to 'cl100k_base'.
+    save : bool, optional
+        Whether to save the portions to files. Defaults to False.
+    save_dir : str or None, optional
+        The directory to save the portions to. If None, will save in the same directory as the jsonl file, 
+        in a folder named 'portions-<jsonl_filename>'. Defaults to None.
+    overwrite : bool, optional
+        Whether to overwrite existing files. Defaults to False.
+    '''
+    if save:
+        if save_dir is None:
+            base_dir = os.path.dirname(jsonl_path)
+            jsonl_fname = os.path.basename(jsonl_path).replace('.jsonl', '')
+            save_dir = os.path.join(base_dir, f'portions-{jsonl_fname}')
+        os.makedirs(save_dir, exist_ok=True)
+
+    encoding = tiktoken.get_encoding(encoding_name)
+    current_portion = []
+    current_token_count = 0
+    
+    def save_portion(portion:list[dict], i:int):
+        if save:
+            portion_fname = f'portion-{i}.jsonl'
+            portion_path = os.path.join(save_dir, portion_fname)
+            if os.path.exists(portion_path) and not overwrite:
+                logger_llm.debug(f'PORTION NOT SAVED: {portion_fname} overwrite=False, file present at {portion_path}')
+            else:
+                with open(portion_path, 'w') as f:
+                    for record in portion:
+                        f.write(json.dumps(record) + '\n')
+                logger_llm.debug(f'PORTION SAVED: {portion_fname} at {portion_path}')
+
+    start_index = 0
+    with open(jsonl_path, 'r') as f:
+        for i, line in enumerate(f):
+            prompt_json = json.loads(line)
+            token_count = len(encoding.encode(prompt_json.get('body', {}).get('messages', [{}])[0].get('content', '')))
+            if current_token_count + token_count > max_tokens and current_portion:
+                yield JSONLPortion(
+                    portion=current_portion,
+                    token_count=current_token_count,
+                    start_index=start_index,
+                    end_index=i-1
+                )
+                save_portion(current_portion, i)
+                
+                # (re)set for next portion
+                current_token_count = 0
+                start_index = i
+                current_portion = []
+            current_portion.append(prompt_json)
+            current_token_count += token_count
+
+    # yield any remaining portion
+    if current_portion:
+        yield JSONLPortion(
+            portion=current_portion,
+            token_count=current_token_count,
+            start_index=start_index,
+            end_index=i
+        )
+        save_portion(current_portion, i+1)
+
+
+def submit_openai_batch(
+        jsonl:str|list[dict], 
+        save_dir:str|None = None
+) -> str:
+    '''
+    Submit a batch of prompts for analysis by OpenAI models. Returns the batch ID (`batch_id`), and saves the batch
+    details to `batch_id`.json in `save_dir` (if provided, or in the 'batches' folder in the relevant TermCollection 
+    directory if not).
+    
+    Parameters
+    ----------
+    jsonl_path : str or list[dict]
+        The path to the JSONL data to submit to OpenAI's API, or a list of dictionaries containing the data to submit. 
+        If a list of dicts is provided, `save_dir` must be provided.
+    save_dir : str or None
+        The directory to save the batch details json to. Will be created if it does not exist. If None (the default), 
+        will be inferred from the path provided to `jsonl`. If `jsonl` is provided as a list of 
+        dicts, this argument must be provided.
     
     Returns
     -------
-    dict
-        The analysis results, as a dictionary.
+    str
+        The ID of the submitted batch.
     '''
-    if not isinstance(jsonl_path, str):
-        raise ValueError(f'jsonl_path should be a path to a jsonl file containing the prompts. Got {type(jsonl_path)}')
-    if not os.path.isfile(jsonl_path):
-        raise ValueError(f'jsonl_path should be a path to a jsonl file containing the prompts. Got {jsonl_path}')
-    
-    if terms_dir is None:
-        terms = jsonl_path.split(os.path.sep)[-3]  # get terms collection name from path like 'data/terms/{collection-name}/prompts/prompts.jsonl'
+    if isinstance(jsonl, str):
+        if not os.path.isfile(jsonl):
+            raise ValueError(f'jsonl should be a path to a jsonl file containing the prompts. Got {jsonl}')
+    elif isinstance(jsonl, list):
+        # validate list of dicts
+        for record in jsonl:
+            if not isinstance(record, dict):
+                raise ValueError(f'jsonl list should contain dictionaries. Got {type(record)}')
     else:
-        terms = terms_dir.split(os.path.sep)[-1]  # get terms collection name from path like 'data/terms/{collection-name}'
-    jsonl_name = os.path.basename(jsonl_path)
-    
+        raise ValueError(f'jsonl should be either a path to a jsonl file, or a list of dictionaries containing the data. Got {type(jsonl)}')
+
+    # determine term collection for save location
+    if save_dir is None:
+        if isinstance(jsonl, str):
+            terms = os.path.basename(os.path.dirname(os.path.dirname(jsonl)))  # get term collection from parent folder name
+            if not os.path.exists(os.path.join(TERMS_DIR, terms)):
+                raise ValueError(f'TermCollection "{terms}" inferred from jsonl path {jsonl} does not exist in TERMS_DIR. Check the path or specify save_dir explicitly.')
+            save_dir = os.path.join(TERMS_DIR, terms, 'batches')
+        else:
+            raise ValueError(f'If jsonl is provided as a list of dicts, save_dir must be specified to determine where to save batch details. Got jsonl as list and save_dir={save_dir}')
+    elif not os.path.isdir(save_dir):
+            raise ValueError(f'save_dir should be a path to a directory where batch details can be saved. Got {save_dir}')
+
     # set up client
     load_dotenv()
     client = OpenAI()
 
-    batch_file = client.files.create(
-        file=open(jsonl_path, "rb"),
-        purpose="batch"
-    )
-    logger_llm.debug(f'JSONL UPLOADED -> OpenAI: {os.path.basename(jsonl_path)} with ID {batch_file.id}. Full path: {jsonl_path}')
+    if isinstance(jsonl, list):
+        jsonl_bytes = io.BytesIO("\n".join(json.dumps(record) for record in jsonl).encode())
+
+        batch_file = client.files.create(
+            file=('jsonl_data.jsonl', jsonl_bytes, "application/json"),
+            purpose="batch"
+        )
+        logger_llm.debug(f'JSONL UPLOADED -> OpenAI: {os.path.basename(jsonl)} with ID {batch_file.id}. From list, with len: {len(jsonl)}')
+    else:
+        batch_file = client.files.create(
+            file=open(jsonl, "rb"),
+            purpose="batch"
+        )
+        logger_llm.debug(f'JSONL UPLOADED -> OpenAI: {os.path.basename(jsonl)} with ID {batch_file.id}. From file, with path: {jsonl}')
 
     batch = client.batches.create(
         input_file_id=batch_file.id,
@@ -482,17 +594,16 @@ def submit_openai_batch(
     )
     logger_llm.debug(f'OPENAI BATCH CREATED: {batch.id} for file {batch_file.id}.')
 
-    if terms_dir:
-        batch_save_path = os.path.join(terms_dir, 'batches', f'{batch.id}.json')
-        os.makedirs(os.path.dirname(batch_save_path), exist_ok=True)
-        with open(batch_save_path, 'w') as f:
-            f.write(json.dumps(batch.model_dump(), indent=4))
-        logger_llm.debug(f'BATCH DETAILS SAVED: {batch.id} at {batch_save_path}')
+    # save
+    os.makedirs(save_dir, exist_ok=True)
+    batch_save_path = os.path.join(save_dir, f'{batch.id}.json')
+    with open(batch_save_path, 'w') as f:
+        f.write(json.dumps(batch.model_dump(), indent=4))
+    logger_llm.debug(f'BATCH DETAILS SAVED: {batch.id} at {batch_save_path}')
 
     return batch.id
 
-def check_batch_status(batch_id:str, *, 
-                       dir_to_search:str = TERMS_DIR) -> dict:
+def check_batch_status(batch_id:str) -> dict:
     '''
     Check the status of the requested batch, and update the saved batch details file.
 
@@ -500,8 +611,6 @@ def check_batch_status(batch_id:str, *,
     ----------
     batch_id : str
         The ID of the batch to check (also the name of the batch json file), as returned by submit_openai_batch.
-    dir_to_search : str, optional
-        The directory to search for the batch details file. Defaults to the 'terms' subdirectory of the data directory.
 
     Returns
     -------
@@ -517,7 +626,7 @@ def check_batch_status(batch_id:str, *,
     # find batch details file and update it
     batch_file_path = None
 
-    for root, dirs, files in os.walk(dir_to_search):
+    for root, dirs, files in os.walk(TERMS_DIR):
         for file in files:
             if file == f'{batch_id}.json':
                 batch_file_path = os.path.join(root, file)
@@ -530,13 +639,13 @@ def check_batch_status(batch_id:str, *,
             f.write(json.dumps(batch.model_dump(), indent=4))
         logger_llm.debug(f'BATCH DETAILS UPDATED: {batch.id} at {batch_file_path}')
     else:
-        raise FileNotFoundError(f'Could not find batch details file for batch ID {batch_id} in directory {dir_to_search}')
+        raise FileNotFoundError(f'Searched for batch file "{batch_id}.json" in directory {TERMS_DIR}, but found no match.')
     
     return batch.model_dump()
     
 def retrieve_batch_results(batch_id:str, *, 
-                       save_path:str|None = None,
-                       return_results:bool = True) -> list[dict]|None:
+                       if_incomplete:Literal['error', 'ignore'] = 'error',
+                       save:bool = True, save_as:str = None) -> list[dict]|None:
     '''
     Retrieve the results of the requested batch.
 
@@ -544,10 +653,8 @@ def retrieve_batch_results(batch_id:str, *,
     ----------
     batch_id : str
         The ID of the batch to retrieve results for, as returned by submit_openai_batch.
-    save_path : str|None, optional
-        The path to save the results to. If None, the results are not saved.
-    return_results : bool, optional
-        Whether to return the results as a list of dictionaries. Defaults to True.
+    if_incomplete : Literal['error', 'ignore']
+        What to do if the batch is not completed yet. If 'error', a ValueError will be raised. If 'ignore', the function will return None and log a warning.
 
     Returns
     -------
@@ -560,12 +667,31 @@ def retrieve_batch_results(batch_id:str, *,
     batch = client.batches.retrieve(batch_id)
     
     if batch.status != 'completed':
-        raise ValueError(f'Batch {batch_id} is not completed yet. Current status: {batch.status}')
+        if if_incomplete == 'error':
+            raise ValueError(f'Batch {batch_id} is not yet complete. Current status: {batch.status}')
+        elif if_incomplete == 'ignore':
+            logger_llm.warning(f'Batch {batch_id} is not completed yet. Current status: {batch.status}. Returning None.')
+            return None
+        else:
+            raise ValueError(f'Invalid value for if_incomplete: {if_incomplete}. Must be "error" or "ignore".')
     
     file = client.files.retrieve(batch.output_file_id)
     results = [json.loads(line) for line in file.read().splitlines()]
     
-    
     logger_llm.debug(f'BATCH RESULTS RETRIEVED: {batch.id} - {len(results)} results retrieved.')
+
+    if save:
+        for root, dirs, files in os.walk(TERMS_DIR):
+            for file in files:
+                if file == f'{batch_id}.json':
+                    batch_file_path = os.path.join(root, file)
+                    break
+            if batch_file_path:
+                break
+        term_coll = os.path.basename(os.path.dirname(os.path.dirname(batch_file_path)))
+        save_path = save_as or os.path.join(OUT_DIR, term_coll, f'{batch_id}_results.json')
+        with open(save_path, 'w') as f:
+            json.dump(results, f, indent=4)
+        logger_llm.debug(f'BATCH RESULTS SAVED: {batch.id} at {save_path}')
 
     return results

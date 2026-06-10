@@ -6,11 +6,16 @@ from openai import OpenAI
 from typing import Iterable, Any, Literal
 import json
 from tqdm import tqdm
+import time
 
-from .rag import search_chunks, pdf_to_md, chunk_md, chunks_list
-from .prompt import construct_prompt
+from .rag import search_chunks, pdf_to_md, chunk_md
+from .prompt import (
+    construct_prompt, create_openai_jsonl, jsonl_portions, 
+    submit_openai_batch, check_batch_status, retrieve_batch_results,
+    DEFAULT_MODEL
+)
 from ..companies import Company, COS, CompanyCollection, co_files, file_metadata
-from ..util import REPORT_TYPES, DATA_DIR, OUT_DIR, logger_llm, COMPANIES_DIR
+from ..util import REPORT_TYPES, DATA_DIR, TERMS_DIR, OUT_DIR, logger_llm, COMPANIES_DIR
 from ..regex.terms import Term, TermCollection, TERMS_ALL
 
 
@@ -43,9 +48,11 @@ def stage_convert(cos: Company|CompanyCollection = COS, report_types: Iterable[s
 
     with ProcessPoolExecutor(max_workers=num_workers) as executor:
         futures = []
-        for pdf in co_files(yield_level='report_pdf', companies=cos, report_types=report_types):
-            if pdf.endswith('.pdf'):
-                futures.append(executor.submit(pdf_to_md, pdf_path=pdf, save=True, save_path=pdf.replace('.pdf', '.md'), overwrite=overwrite))
+        for report in co_files(yield_level='Report', companies=cos, report_types=report_types):
+            if report.pdf_path is None:
+                logger_llm.warning(f'PDF NOT FOUND: {report.report_name}. Skipping pdf->md conversion. Full path: {report._pdf_path}')
+                continue
+            futures.append(executor.submit(pdf_to_md, report=report, save=True, overwrite=overwrite))
         
         with tqdm(
             total=len(futures), desc="converting pdfs to md", disable=not progress_bar, 
@@ -84,9 +91,11 @@ def stage_chunk(*,
     # chunk in parallel using threads (no OCR, so not limited to processes)
     with ThreadPoolExecutor(max_workers=num_workers) as executor:
         futures = []
-        for file in co_files(yield_level='report_md'):
-            dir_to_save = file.replace(os.path.basename(file), 'chunks')
-            futures.append(executor.submit(chunk_md, md=file, dir_to_save=dir_to_save, overwrite_chunks=overwrite, remove_original_md=True, **chunk_kwargs))
+        for report in co_files(yield_level='Report'):
+            if report.md_path is None:
+                logger_llm.warning(f'MARKDOWN NOT FOUND: {report.report_name}. Skipping chunking. Full path: {report._md_path}')
+                continue
+            futures.append(executor.submit(chunk_md, report=report, overwrite_chunks=overwrite, save=True, remove_original_md=True, **chunk_kwargs))
         
         with tqdm(total=len(futures), desc="chunking md files", disable=not progress_bar, bar_format='{desc}: {bar} {n}/{total}') as pbar:
             for future in as_completed(futures):
@@ -107,20 +116,20 @@ def stage_search(terms: TermCollection=TERMS_ALL, *, overwrite: bool = False, pr
     '''
     # get total by counting the number of md files to be searched, for progress bar
 
-    total = sum([1 for _ in co_files(yield_level='chunk')])
+    total = sum([report.n_chunks for report in co_files(yield_level='Report')])
 
     with tqdm(total=total, desc="Processing companies", disable=not progress_bar, bar_format='{desc}: {bar} {n}/{total}') as pbar:
-        for chunks_dir in co_files(yield_level='chunk_folder'):
-
-            save_dir = os.path.join(os.path.dirname(chunks_dir), terms.folder_name)
-            os.makedirs(save_dir, exist_ok=True)
+        for report in co_files(yield_level='Report'):
+            if report.n_chunks == 0:
+                logger_llm.warning(f'NO CHUNKS FOUND for {report.report_name}. Skipping search. Full path: {report._chunks_dir}')
+                continue
 
             search_chunks(
-                chunks_dir, terms, 
-                save_path=os.path.join(save_dir, f'search-results.json'), 
+                report=report, terms=terms,
+                save=True,
                 overwrite=overwrite
             )
-            pbar.update(sum(1 for f in os.listdir(chunks_dir) if f.endswith('.md')))
+            pbar.update(report.n_chunks)
     
     if not progress_bar:
         print('search complete')
@@ -146,56 +155,38 @@ def stage_draft(terms: TermCollection=TERMS_ALL, *,
 
     skip_counter = 0
     with tqdm(total=sum(1 for _ in co_files(yield_level='chunk_folder'))*len(terms), desc="Drafting prompts", disable=not progress_bar, bar_format='{desc}: {bar} {n}/{total}') as pbar:
-        for chunks_dir in co_files(yield_level='chunk_folder'):
-
-            # extract company, report type, report name, and year from file path
-            report_mdata = file_metadata(chunks_dir)
-            co = report_mdata['company']
-            report_type = report_mdata['report_type']
-            report = report_mdata['report_name']
-            year = report_mdata['year']
-
-            # check year is a valid 4 digit no.
-            if year is None or not (year.isdigit() and len(year) == 4):
-                logger_llm.warning(f'INVALID PROMPT YEAR: "{year}" from -> "{report}". Skipping prompt construction for this report.')
-                pbar.update(1)
-                continue
-
-            report_folder = os.path.dirname(chunks_dir)
-            search_results_filepath = os.path.join(report_folder, terms.folder_name, 'search-results.json')
+        for report in co_files(yield_level='Report'):
                     
-            if not os.path.exists(search_results_filepath):
-                logger_llm.warning(f'SEARCH RESULTS NOT FOUND for {co} - {report_type} - {report}. Skipping prompt construction.')
+            if report.search_results_path is None:
+                logger_llm.warning(f'SEARCH RESULTS NOT FOUND for {report:full}. Skipping prompt construction.')
                 pbar.update(len(terms))
                 skip_counter += len(terms)
-                if skip_counter > 10:
-                    raise ValueError(f'More than 10 prompts skipped due to missing search results - try running stage_search. Last missing file: {search_results_filepath}')
                 continue
 
-            logger_llm.debug(f'PROCESSING: {co} - {report_type} - {search_results_filepath}')
+            if report.n_chunks == 0:
+                logger_llm.warning(f'NO CHUNKS FOUND for {report:full}. Skipping prompt construction. Full path: {report._chunks_dir}')
+                pbar.update(len(terms))
+                skip_counter += len(terms)
+                continue
+
+            if skip_counter > 10:
+                raise ValueError(f'More than 10 prompts skipped due to missing chunks or search results - try running stage_chunk and/or stage_search. Last missing report dir: {report.dir}')
+
+            logger_llm.debug(f'PROCESSING: {report.company} - {report.report_type} - {report.search_results_filepath}')
             
-            search_results = json.load(open(search_results_filepath))
+            search_results = json.load(open(report.search_results_filepath))
             for term_alias, chunk_inds in search_results.items():
                 if chunk_inds is None or len(chunk_inds) == 0:
-                    logger_llm.debug(f'NO CHUNKS for {term_alias} in {co} - {report_type} - {report}. Skipping prompt construction for this term.')
+                    logger_llm.debug(f'NO CHUNKS for {term_alias} in {report:full}. Skipping prompt construction for this term.')
                     pbar.update(1)
                     continue
                 
                 term = terms[term_alias]
-                
-                prompt_path = os.path.join(report_folder, terms.folder_name, 'prompts', term.prompt_fname)
-
-                logger_llm.debug(f'CONSTRUCTING PROMPT for {co} - {report_type} - {report} - {term_alias}. Saving to {prompt_path}')
-                if not overwrite and os.path.isfile(prompt_path):
-                    logger_llm.debug(f'PROMPT NOT CREATED: {prompt_path} already exists and overwrite=False')
-                    pbar.update(1)
-                    continue
-                
+                logger_llm.debug(f'CONSTRUCTING PROMPT for {report:full} - {term_alias}. Saving to {report.prompt_path(terms, term)}')
                 construct_prompt(
-                    company=co, report_type=report_type, year=year, term=term,
-                    chunks=chunks_list(chunks_dir), chunk_inds=chunk_inds,
+                    report=report, term=term,
                     overlap_strategy=overlap_strategy, overlap_amount=overlap_amount,
-                    save_path=prompt_path, overwrite=overwrite
+                    save=True, overwrite=overwrite
                 )
                 pbar.update(1)
 
@@ -203,17 +194,98 @@ def stage_draft(terms: TermCollection=TERMS_ALL, *,
         print('prompts drafted')
         
 
-def stage_analyse(model: str = "gpt-5.1", max_workers: int = 5):
+def stage_submit(model: str = DEFAULT_MODEL, *,
+                 portion_size: int = 3_000,
+                 encoding: str = 'cl100k_base',
+                 companies: Company|CompanyCollection = None, 
+                 overwrite: bool = False):
     '''
-    Run LLM analysis on all prompts created in stage_draft, and save the results as json files.
+    Submit all prompts created in stage_draft for analysis, and save the batch details as json files.
 
     Parameters
     ----------
     model : str
         The name of the LLM model to use for analysis. Defaults to "gpt-5.1".
-    max_workers : int
-        The maximum number of worker threads to use for parallel analysis. Defaults to 5.
+    portion_size : int
+        The maximum number of tokens to include in each batch portion submitted to the LLM. Defaults
+        to 3,000.
+    encoding : str
+        The name of the token encoding to use for counting tokens in the prompts. Defaults to 'cl100k_base'.
+    companies : Company, CompanyCollection or None
+        The company or companies to include in the analysis. If None, includes all companies for which prompts have been drafted. Defaults to None.
+    overwrite : bool
+        Whether to overwrite existing analysis results. Defaults to False.
     '''
-    pass
+    # collect all prompt file paths. assuming all text files are to be analysed.
+    file_paths = []
+    for report in co_files(yield_level='Report', companies=companies):
+        for term_folder in report.term_folder_names():
+            if report.prompts_dir(term_folder) is None:
+                continue
+            for prompt_file in os.listdir(report.prompts_dir(term_folder)):
+                if prompt_file.endswith('.txt'):
+                    file_paths.append(report.prompt_path(term_folder, prompt_file))
+    logger_llm.info(f'COLLECTED PROMPTS: {len(file_paths)} prompt files found in .{len(list(co_files(yield_level="Report", companies=companies)))} reports.')
+
+    # create jsonl for openai batch
+    jsonl_path = create_openai_jsonl(
+        prompt_paths=file_paths,
+        model=model,
+        save=True,
+        overwrite=overwrite,
+        return_type='path'
+    )
 
 
+    # submit portions of jsonl to openai
+    term_coll = os.path.basename(os.path.dirname(os.path.dirname(file_paths[0])))  # structure asserted in create_openai_jsonl
+    save_dir = os.path.join(TERMS_DIR, term_coll, 'batches')
+    info_path = os.path.join(TERMS_DIR, term_coll, 
+                             'portions-info-' + os.path.basename(jsonl_path).replace('.jsonl', '.json'))
+
+    portion_info = {}
+    portion_index_start = 0
+    portion_index_end = 0
+    for portion in jsonl_portions(jsonl_path=jsonl_path, max_tokens=portion_size):
+        portion_index_end += len(portion)
+        batch_id = submit_openai_batch(
+            jsonl=portion.portion,
+            save_dir=save_dir,
+        )
+        portion_info[batch_id] = (portion_index_start, portion_index_end)
+        portion_index_start += len(portion)
+    
+    # add metadata to portion info, and save
+    portion_info = {
+        'metadata': {'parent': jsonl_path, 'portion_size': portion_size, 'encoding': encoding, 'n_portions': len(portion_info)},
+        'batches': portion_info
+    }
+    with open(info_path, 'w') as f:
+        json.dump(portion_info, f, indent=4)
+    
+def stage_retrieve(batch_ids: Iterable[str]):
+    '''
+    Retrieve the results of the submitted batches, saving the results as json files in the 
+    output directory for the relevant term collection. If batches have not yet completed,
+    the function will print the currrent status of the batch.
+
+    Parameters
+    ----------
+    batch_ids : Iterable[str]
+        The IDs of the batches to retrieve results for.
+    '''
+    for batch_id in batch_ids:
+        while True:
+            batch_info = check_batch_status(batch_id)
+            status = batch_info.get('status')
+            logger_llm.info(f'BATCH CHECKED {batch_id}: {status}. ')
+            if status == 'completed':
+                retrieve_batch_results(batch_id, save=True)
+                break
+            elif status in ['validating', 'in_progress', 'finalizing']:
+                print(f'BATCH WORKING {batch_id} - status={status}.')
+                break
+            elif status in ['failed', 'cancelled', 'cancelling', 'expired']:
+                logger_llm.error(f'Batch {batch_id} {status}. Skipping retrieval.')
+                print(f'BATCH STOPPED {batch_id} - status={status}. Skipping retrieval.')
+                break

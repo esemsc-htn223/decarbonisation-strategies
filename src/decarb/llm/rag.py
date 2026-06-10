@@ -1,5 +1,5 @@
 import pymupdf4llm
-from ..companies import Company
+from ..companies import Company, Report
 from ..regex.terms import Term, TermCollection, TERMS_ALL
 from ..util import logger_llm, DATA_DIR, REPORT_TYPES_SHORT, COMPANIES_DIR
 
@@ -22,48 +22,29 @@ MAX_CHUNK_SIZE = 2000
 MIN_CHUNK_SIZE = 500
 CHUNK_OVERLAP = 200
 
-def chunk_files_exist(chunk_dir:str) -> bool:
-    '''
-    Check if chunk files already exist in the given directory.
-
-    Parameters
-    ----------
-    chunk_dir : str
-        The directory to check for chunk files.
-
-    Returns
-    -------
-    bool
-        True if chunk files exist, False otherwise.
-    '''
-    if os.path.isdir(chunk_dir):
-        list_dir = os.listdir(chunk_dir)
-        list_dir.pop('.DS_Store') if '.DS_Store' in list_dir else None
-        return len(list_dir) > 0 and any(f.endswith('.md') for f in list_dir)
-    return False
-
 def tidy_md(md:str):
     tidy_md = md.replace('$', r'\$')  # no maths in these reports
     tidy_md = re.sub(r'(-)\1{3,}', r'\1\1\1', tidy_md) # limit repeated - to 3
     tidy_md = re.sub(r'\n{3,}', r'\n\n', tidy_md) # limit repeated \n to 2
     return tidy_md
 
-def pdf_to_md(pdf_path:str, *,
+def pdf_to_md(report: Report, *,
               save:bool = True,
-              save_path:str|None = None, 
+              save_as:str|None = None, 
               overwrite:bool=False) -> str:
     '''
     Convert the given pdf to markdown.
 
     Parameters
     ----------
-    pdf_path : str
-        The path to the pdf to convert.
+    report : Report 
+        The report to convert. The pdf path will be inferred from report.pdf_path.
     save : bool
         Whether to save the converted markdown as a file. If False, the markdown content will be returned as a string.
-    save_path : str | None
-        The path to save the converted markdown file to. 
-        If None, markdown will be saved in the md directory, with the same name but with a .md extension.
+    save_as : str | None, optional
+        The path to save the converted markdown file to. If not provided, the markdown will be saved 
+        to report._md_path, (i.e., in the same directory as the PDF but with a .md extension). 
+        Only relevant if save=True.
     overwrite : bool
         Whether to overwrite existing markdown files. If False and a markdown file already exists at `save_path`, the function will skip conversion and return the existing markdown content.
 
@@ -72,16 +53,21 @@ def pdf_to_md(pdf_path:str, *,
     str
         If save=True, the directory where the chunked markdown files are saved. Otherwise, the markdown content as a string.
     '''
-    # get default save dir
-    if save and save_path is None:
-        save_path = pdf_path.replace('.pdf', '.md')
 
-    if not overwrite and os.path.isfile(save_path):
+    pdf_path = report.pdf_path
+    if pdf_path is None:
+        raise ValueError(f'PDF file not found for report at expected location: {report._pdf_path}')
+    
+    # get default save dir
+    if save and save_as is None:
+        save_as = report._md_path
+
+    if not overwrite and os.path.isfile(save_as):
         logger_llm.debug(f'NOT CONVERTED: "{os.path.basename(pdf_path)}". overwrite=False, md file exists. pdf path: {pdf_path}')
         if save:
-            return save_path
+            return save_as
         else:
-            return open(save_path).read()
+            return open(save_as).read()
     try:
         md = tidy_md(pymupdf4llm.to_markdown(pdf_path))
     except pymupdf.mupdf.FzErrorLimit as e:
@@ -94,22 +80,24 @@ def pdf_to_md(pdf_path:str, *,
     logger_llm.debug(f'CONVERTED "{os.path.basename(pdf_path)}". len: {len(md)}. pdf path: {pdf_path}.')
     
     if save:
-        with open(save_path, 'w') as f:
+        with open(save_as, 'w') as f:
             f.write(md)
-        logger_llm.debug(f'MD SAVED "{os.path.basename(save_path)}". full path: {save_path}. pdf path: {pdf_path}.')
-        return save_path
+        logger_llm.debug(f'MD SAVED "{os.path.basename(save_as)}". full path: {save_as}. pdf path: {pdf_path}.')
+        return save_as
     else:
         return md
 
-def chunk_md(md:str, *, 
-             max_chunk_size:int=MAX_CHUNK_SIZE, 
-             min_chunk_size:int=MIN_CHUNK_SIZE, 
-             dir_to_save:str|None=None,
-             overwrite_chunks:bool=False,
-             remove_original_md:bool=False,
-             encoder_name:str='gpt2',
-             #chunk_overlap:int=CHUNK_OVERLAP  # not implemented - could do manually?
-             ) -> list[str]:
+def chunk_md(
+        report:Report, 
+        *, 
+        max_chunk_size:int=MAX_CHUNK_SIZE, 
+        min_chunk_size:int=MIN_CHUNK_SIZE, 
+        save:bool=True,
+        save_as:str|None=None,
+        overwrite_chunks:bool=False,
+        remove_original_md:bool=False,
+        encoder_name:str='cl100k_base',
+    ) -> list[str]:
     '''
     Split the given markdown into chunks via content-aware splitting.
     Content is first split on markdown headers (##, and ###). Each chunk is then split to
@@ -125,8 +113,14 @@ def chunk_md(md:str, *,
         chunks may have a __len__ that is longer than `max_chunk_size`
     min_chunk_size : int
         Minimum chunk size. Note this is calculated by characters (not tokens).
-    dir_to_save : str | None
-        The directory to save the chunked markdown files to. If None, the chunked files will not be saved.
+    save : bool
+        Whether to save the chunked markdown as files. Default is True. 
+        If False, the chunked markdown will be returned as a list of strings.
+        Will save to `report._chunks_dir` by default, or to `save_as` if provided.
+    save_as : str | None
+        The directory to save the chunked markdown files to. If None (default), the chunked files will 
+        be saved to `report._chunks_dir` (i.e., in a 'chunks' subdirectory of the report directory). 
+        Only relevant if `save=True`.
     overwrite_chunks : bool
         Whether to overwrite existing chunk files in `dir_to_save`. If False and chunk files already exist,
         the function will skip conversion.
@@ -141,21 +135,28 @@ def chunk_md(md:str, *,
     '''
     
     # ensure we have md path, for consistency of removal, even if we don't need to read it
-    if os.path.isfile(md):
-        md_path = md
-    else:
-        md_path = None
+    md_path = report.md_path
+    if md_path is None:
+        raise ValueError(f'Markdown file not found for report at expected location: {report._md_path}')
     
-    if os.path.isdir(dir_to_save) and not overwrite_chunks:
-        if chunk_files_exist(dir_to_save):
-            logger_llm.debug(f'NOT CHUNKED: {os.path.basename(dir_to_save)}. overwrite_chunks=False, chunk files exist. Full path: {dir_to_save}')
-            
-            out = [open(os.path.join(dir_to_save, f)).read() for f in sorted(os.listdir(dir_to_save)) if f.endswith('.md')]
+    if save_as is not None:
+        dir_to_save = save_as
     else:
-        # read md if required
-        if md_path:
-            with open(md_path, 'r') as f:
-                md = f.read()
+        dir_to_save = report._chunks_dir
+    
+    # check if we're overwriting
+    if os.path.isdir(dir_to_save):
+        chunk_files = [os.path.join(dir_to_save, f) for f in os.listdir(dir_to_save) if f.endswith('.md') and f.startswith('chunk-')]
+    else:
+        chunk_files = []
+    
+    if save and not overwrite_chunks and len(chunk_files) > 0:
+            logger_llm.debug(f'NOT CHUNKED: {os.path.basename(dir_to_save)}. overwrite_chunks=False, chunk files exist. Full path: {dir_to_save}')
+            out = [open(f).read() for f in sorted(chunk_files)]
+    else:
+        # read md
+        with open(md_path, 'r') as f:
+            md = f.read()
 
         headers_to_split_on = [
             #("#", "Header 1"),
@@ -204,87 +205,51 @@ def chunk_md(md:str, *,
     
     return out
 
-def co_pdfs_to_md(co: Company, report_type: str, *, overwrite: bool = False, **chunk_kwargs) -> list[str]:
-    '''
-    Convert the pdfs for the given company and report type to chunked markdown, 
-    and save them in the company's md folder.
-
-    Parameters
-    ----------
-    co : Company
-        The company whose pdfs to convert.
-    report_type : str
-        The report type to convert, given as a folder name to be found in the Company's data folder.
-
-    Returns
-    -------
-    list[str]
-        A list of the locations of the chunked markdown folders created.
-    '''
-
-    md_locs = []
-    reports_dir = os.path.join(co.raw_folder, report_type)
-    md_dir = os.path.join(co.md_folder, report_type)
-    if not os.path.isdir(reports_dir):
-        raise ValueError(f'{reports_dir} is not a directory')
-    if not os.path.isdir(md_dir):
-        os.makedirs(md_dir)
-
-    for pdf in os.listdir(reports_dir):
-        if pdf.endswith('.pdf'):
-            pdf_path = os.path.join(reports_dir, pdf)
-            md_chunks_dir = os.path.join(md_dir, pdf.replace('.pdf', ''))
-
-            md = pdf_to_md(pdf_path, save=False, overwrite=False)
-            chunk_md(md, dir_to_save=md_chunks_dir, overwrite=overwrite, **chunk_kwargs)
-            md_locs.append(md_chunks_dir)
-
-    return md_locs
-
-def search_chunks(chunks: list[str]|dict[int, str], terms: Term|TermCollection = TERMS_ALL, *,
-                  save_path: str | None = None, overwrite: bool = False) -> dict[str, list[int]]:
+def search_chunks(
+        report: Report, 
+        terms: Term|TermCollection = TERMS_ALL, 
+        *,
+        save:bool=True,
+        save_as: str | None = None, 
+        overwrite: bool = False
+    ) -> dict[str, list[int]]:
     '''
     Search the given markdown chunks for the given terms. Returns a list of indices, where each index
     indicates the position of the chunk where the term was found.
 
     Parameters
     ----------
-    chunks : dict[int, str]|str|list[str]
-        Either:
-        - A list of chunk markdown content, sorted by chunk index (as returned by `chunks_list`). In this case, chunk indices are inferred from the position in the list (i.e. index 0 corresponds to chunk-0.md).
-        - A dictionary where the keys are chunk indices and the values are the chunk markdown content.
+    report : Report
+        The report object containing the chunks to search.
     terms : Term | TermCollection
         The term or collection of terms to search for.
-    save_path : str | None
-        The path to save the search results to, as a json file. If None, results will not be saved.
+    save : bool
+        Whether to save the search results as a json file. If False, the search results will be returned as a dictionary.
+    save_as : str | None
+        The path to save the search results to, as a json file. If None, results will be saved to the
+        `report._search_results_path` for the given term collection.
     overwrite : bool
-        Whether to overwrite existing search results at `save_path`. If False and a file already exists at `save_path`, the function will skip searching and return the existing results.
-        Only relevant if `save_path` is not None.
+        Whether to overwrite existing search results the save location. If False and a file already exists at `save_as` or the default location, 
+        the function will skip searching and return the existing results. Only relevant if `save` is True.
 
     Returns
     -------
     dict[str, list[int]]
         A dictionary where the keys are term aliases and the values are lists of chunk indices where the term was found.
     '''
-    if isinstance(chunks, list):
-        chunks_dict = {i: chunk for i, chunk in enumerate(chunks)}  # have to assume pre-sorted
-    elif isinstance(chunks, dict):
-        chunks_dict = chunks
-    elif isinstance(chunks, str) and os.path.isdir(chunks):
-        chunks_dict = {int(f.split('-')[1].split('.')[0]): open(os.path.join(chunks, f)).read() for f in os.listdir(chunks) if f.endswith('.md')}
-    else:
-        raise ValueError(f'chunks must be either a list of strings or a dictionary of int: str. Got {type(chunks)}')
 
-    chunks_dict = dict(sorted(chunks_dict.items()))  # sort dict by keys (chunk indices)
 
+    chunks = report.chunks
     if isinstance(terms, Term):
         terms = [terms]
     results = {}
 
     for term in terms:
-        results[term.alias] = [i for i, chunk in chunks_dict.items() if re.search(term.regex, chunk, re.I)]
+        results[term.alias] = [i for i, chunk in enumerate(chunks) if re.search(term.regex, chunk, re.I)]
         logger_llm.debug(f'SEARCHED for {term.alias}. Found in chunks: {results[term.alias]}')
-    if save_path is not None:
+
+    if save:
+        save_path = report._search_results_path(terms) if save_as is None else save_as
         if not overwrite and os.path.isfile(save_path):
             logger_llm.debug(f'SEARCH NOT SAVED. overwrite=False, file exists: {save_path}')
         else:
@@ -293,25 +258,3 @@ def search_chunks(chunks: list[str]|dict[int, str], terms: Term|TermCollection =
             logger_llm.debug(f'SEARCH SAVED to {save_path}.')
 
     return results
-
-def chunks_list(chunks_folder:str) -> list[str]:
-    '''
-    Get the markdown content of all chunk files in the given directory, as a sorted list.
-    List is sorted by chunk index, which is extracted from the file name (assumes file names are in the format 'chunk-{index}.md').
-
-    Parameters
-    ----------
-    chunks_folder : str
-        The path to the directory containing the chunk files.
-
-    Returns
-    -------
-    list[str]
-        A list of the markdown content of all chunk files in the given directory.
-    '''
-    if not os.path.isdir(chunks_folder):
-        raise ValueError(f'{chunks_folder} is not a directory')
-    
-    chunk_files = [f for f in os.listdir(chunks_folder) if f.endswith('.md')]
-    chunk_files.sort(key=lambda x: int(x.split('-')[1].split('.')[0]))  # Sort by chunk index
-    return [open(os.path.join(chunks_folder, f)).read() for f in chunk_files]
