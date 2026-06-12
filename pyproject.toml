@@ -1,0 +1,33 @@
+[project]
+name = "decarbonisation-strategies"
+version = "0.1.0"
+authors = [{name = "Hugo Neely", email = "htn223@ic.ac.uk"}]
+requires-python = ">=3.13,<3.14"
+license = "MIT"
+description = "A project to analyse the evolution of decarbonisation strategies using LLMs and RAG techniques."
+readme = "README.md"
+keywords = ["decarbonisation", "LLM", "RAG", "corporate sustainability", "climate change"]
+
+[tool.pixi.workspace]
+channels = ["conda-forge"]
+platforms = ["osx-arm64"]
+
+[tool.pixi.tasks]
+
+[tool.pixi.dependencies]
+python = "=3.13"
+marimo = ">=0.23.4,<0.24"
+pandas = ">=3.0.2,<4"
+numpy = ">=2.4.3,<3"
+matplotlib = ">=3.10.9,<4"
+python-dotenv = ">=1.2.2,<2"
+langchain-text-splitters = ">=1.1.2,<2"
+tiktoken = ">=0.12.0,<0.13"
+tqdm = ">=4.67.3,<5"
+pydantic = ">=2.13.4,<3"
+instructor = ">=1.15.1,<2"
+openai = ">=2.38.0,<3"
+anthropic = ">=0.76.0,<0.77"
+
+[tool.pixi.pypi-dependencies]
+pymupdf4llm = ">=1.27.2.1"
