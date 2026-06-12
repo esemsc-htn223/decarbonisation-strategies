@@ -1,6 +1,6 @@
 from dataclasses import dataclass
 import io
-from typing import Iterable, Literal, Iterator
+from typing import Literal, Iterator
 import os
 from dotenv import load_dotenv
 from openai import OpenAI
@@ -9,12 +9,11 @@ import instructor
 import json
 import time
 import uuid
-import warnings
 import tiktoken
 
-from ..companies import Company, COMPANY_ALIASES, Report, file_metadata
-from ..regex.terms import Term, TermCollection
-from ..util import OUT_DIR, REPORT_TYPES_LONG, logger_llm, TERMS_DIR
+from decarb.companies import Company, COMPANY_ALIASES, Report, file_metadata
+from decarb.regex.terms import Term, TermCollection
+from decarb.util import OUT_DIR, REPORT_TYPES_LONG, logger_llm, TERMS_DIR
 
 DEFAULT_MODEL = 'gpt-5.1'
 

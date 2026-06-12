@@ -1,9 +1,4 @@
 import pymupdf4llm
-from ..companies import Company, Report
-from ..regex.terms import Term, TermCollection, TERMS_ALL
-from ..util import logger_llm, DATA_DIR, REPORT_TYPES_SHORT, COMPANIES_DIR
-
-
 import os
 import pymupdf4llm
 import pymupdf
@@ -14,6 +9,10 @@ from concurrent.futures import ThreadPoolExecutor, ProcessPoolExecutor, as_compl
 from dotenv import load_dotenv
 from typing import Iterable, Literal
 import json
+
+from decarb.companies import Company, Report
+from decarb.regex.terms import Term, TermCollection, TERMS_ALL
+from decarb.util import logger_llm, DATA_DIR, REPORT_TYPES_SHORT, COMPANIES_DIR
 
 
 load_dotenv()  # in case TESSDATA_PREFIX is in .env - required for ocr of troublesome docs

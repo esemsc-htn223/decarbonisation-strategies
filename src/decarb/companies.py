@@ -6,7 +6,7 @@ from typing import Iterable, Literal, Union
 import uuid
 import json
 
-from .util import COMPANIES_DIR, TERMS_DIR, logger, REPORT_TYPES
+from decarb.util import COMPANIES_DIR, TERMS_DIR, logger, REPORT_TYPES
 
 
 COMPANY_ALIASES = {
@@ -74,8 +74,13 @@ class Report:
         if isinstance(company, Company):
             company_folder = company.folder_name
         else:
-            company_folder = company
-
+            if company in COMPANY_ALIASES.values():
+                company_folder = next(k for k, v in COMPANY_ALIASES.items() if v == company)
+            else: 
+                company_folder = company
+            
+            
+            
         dir = os.path.join(COMPANIES_DIR, company_folder, report_type)
         # search for dir with year
         dir = next((os.path.join(dir, d) for d in os.listdir(dir) if os.path.isdir(os.path.join(dir, d)) and d.endswith(report_year)), None)
@@ -83,6 +88,12 @@ class Report:
             raise FileNotFoundError(f'Searched for requested year {report_year} report for company {company_folder} and report type {report_type}, but found no matches. Full dir searched: {os.path.join(COMPANIES_DIR, company_folder, report_type)}')
 
         return cls(path=dir)
+
+    @classmethod
+    def from_prompt_id(cls, prompt_id: str):
+        '''Create a Report object from a prompt ID, which is in the format "company_folder/report_type/report_name/term_folder/term_alias".'''
+        company_folder, report_type, report_name, term_alias = prompt_id.split('_')
+        return cls.from_metadata(company_folder, report_type, report_name)
 
     def __format__(self, format_spec):
         if format_spec == 'name':
@@ -96,6 +107,9 @@ class Report:
         
     def __str__(self):
         return f'Report(company={self.company.folder_name}, report_type={self.report_type}, report_name={self.report_name})'
+
+    def __repr__(self):
+        return self.__str__()
 
     ### Base files
     @property
@@ -250,7 +264,6 @@ class Report:
             return None
         with open(search_results_path, 'r') as f:
             return json.load(f)
-    
     
     def _prompts_dir(self, term_folder_name: str):
         '''The expected location of the prompts directory for this report and term collection. Does not check whether the directory actually exists.'''
@@ -432,6 +445,9 @@ class Company:
             raise ValueError(f'No folder found for {report_type} reports of company {self.folder_name} at expected location: {report_type_folder}')
         
         return [os.path.join(report_type_folder, fname) for fname in os.listdir(report_type_folder) if os.path.isdir(os.path.join(report_type_folder, fname))]
+
+    def __hash__(self):
+        return hash(self.folder_name)
 
 class CompanyCollection:
     def __init__(self, companies: Iterable[Company]|dict[str, str]):

@@ -5,8 +5,9 @@ import matplotlib.pyplot as plt
 from typing import Iterable
 from dataclasses import dataclass
 import uuid
+import json
 
-from ..util import TERMS_DIR, logger
+from decarb.util import TERMS_DIR, logger
 
 @dataclass
 class Term:
@@ -27,9 +28,14 @@ class Term:
                self.prompt_alias = self.alias
           self.prompt_fname = self.alias.lower().replace(' ', '-').replace('(', '').replace(')', '') + '.txt'
      
-    
      def __str__(self):
           return self.alias
+     
+     def __repr__(self):
+          return f'Term(alias={self.alias}, regex={self.regex}, colour={self.colour}, prompt_alias={self.prompt_alias})'
+     
+     def __hash__(self):
+          return hash(self.alias)
      
      def set_collection(self, collection: 'TermCollection'):
           if hasattr(self, 'collection'):
@@ -37,7 +43,6 @@ class Term:
           self.collection = collection
     
     
-
 class TermCollection:
      def __init__(self, terms: Iterable[Term], folder_name: str):
 
@@ -53,30 +58,60 @@ class TermCollection:
           self.folder_name = folder_name.replace(' ', '-').lower()
 
           self.folder = os.path.join(TERMS_DIR, self.folder_name)
+          self.json_path = os.path.join(self.folder, 'terms.json')
 
           if not os.path.exists(self.folder):
                os.makedirs(self.folder)
-          if not os.path.exists(os.path.join(self.folder, 'terms.txt')):
-               with open(os.path.join(self.folder, 'terms.txt'), 'w') as f:
-                    for term in self.terms:
-                         f.write(f'{term.alias}: {term.regex}\n')
+          if not os.path.exists(self.json_path):
+               with open(self.json_path, 'w') as f:
+                    json.dump([{
+                         'alias': term.alias, 
+                         'prompt_fname': term.prompt_fname, 
+                         'regex': term.regex, 
+                         'colour': term.colour, 
+                         'prompt_alias': term.prompt_alias} for term in self.terms], f, indent=4)
 
           self.uuid = 'terms-' + uuid.uuid5(uuid.NAMESPACE_OID, ''.join([term.alias + term.regex for term in self.terms])).hex
 
           logger.debug(f'CREATED TermCollection: folder_name={self.folder_name}, uuid={self.uuid}, terms={[term.alias for term in self.terms]}')
 
+     @classmethod
+     def from_folder(cls, folder_name: str):
+          folder_name = folder_name.replace(' ', '-').lower()
+          json_path = os.path.join(TERMS_DIR, folder_name, 'terms.json')
+          if not os.path.exists(json_path):
+               raise ValueError(f'TermCollection with folder name {folder_name} does not exist')
+          with open(json_path, 'r') as f:
+               terms_data = json.load(f)
+          terms = [Term(alias=term_data['alias'], regex=term_data['regex'], colour=term_data['colour'], prompt_alias=term_data.get('prompt_alias')) for term_data in terms_data]
+          return cls(terms, folder_name)
+
      def __iter__(self):
           return iter(self.terms)
     
      def __getitem__(self, key: str|int):
+          '''Index by alias, lowecase index, regex, or, prompt_fname. Priority in that order '''
           if isinstance(key, int):
                return self.terms[key]
           for term in self.terms:
+               # alias indexing
                if term.alias == key:
                    return term
                if term.alias.lower() == key.lower():
                   return term
-          raise KeyError(f'Term with alias {key} not found')
+               
+               # regex
+               if term.regex == key:
+                    return term
+               
+               # prompt fname indexing
+               if term.prompt_fname == key:
+                    return term
+               if term.prompt_fname.replace('.txt', '') == key:
+                    return term
+               
+               
+          raise KeyError(f'Term with alias, prompt_fname {key} not found')
     
      def __len__(self):
            return len(self.terms)

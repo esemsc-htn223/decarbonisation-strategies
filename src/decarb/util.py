@@ -28,7 +28,7 @@ if not os.path.exists(OUT_DIR):
 
 REPORT_TYPES = {'annual-report', 'sustainability-report'}
 REPORT_TYPES_SHORT = {'annual-report': 'an', 'sustainability-report': 'sr'}
-REPORT_TYPES_LONG = {'annual-report': 'annual financial report', 'sustainability-report': 'sustainability report'}
+REPORT_TYPES_LONG = {'annual-report': 'financial report', 'sustainability-report': 'sustainability report'}
 
 logger = logging.getLogger('analysis')
 logger.setLevel(logging.DEBUG)

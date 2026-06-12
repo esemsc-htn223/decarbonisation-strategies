@@ -5,11 +5,24 @@ import matplotlib.pyplot as plt
 import matplotlib as mpl
 import tiktoken
 import os
+from typing import Literal
 
-from .rag import search_chunks
-from ..regex.terms import (
+from decarb.companies import Report
+
+from decarb.llm.rag import search_chunks
+from decarb.regex.terms import (
     Term, TermCollection, TERMS_ALL
 )
+
+def search_results_chunks(report: Report, terms: TermCollection, term: Term, return_type: Literal['dict', 'list'] = 'list') -> dict[str, str]|list[str]:
+    search_res = report.search_results(terms)
+    if search_res is None:
+        raise FileNotFoundError(f'Search results not found for report {report.name} and terms {terms.folder_name}. Please run `search_chunks` first to generate search results.')
+    term_alias = term.alias if isinstance(term, Term) else term  # allowing str input
+    if return_type == 'dict':
+        return {i: open(os.path.join(report.chunks_dir, f'chunk-{i}.md')).read() for i in search_res[term_alias]}
+    elif return_type == 'list':
+        return [open(os.path.join(report.chunks_dir, f'chunk-{i}.md')).read() for i in search_res[term_alias]]
 
 def min_max_chunks(chunks: list[str]) -> mo.Html:
     min_len = min(len(c) for c in chunks)
@@ -59,7 +72,7 @@ def chunk_size_hist(chunks: list[str], encoding: tiktoken.Encoding|str = 'cl100k
     axs[1].set_ylabel('Frequency')
     return fig, axs
 
-def search_summary(chunks: list[str]|dict[int, str]|str, terms: Term|TermCollection = TERMS_ALL, *, search_res: dict[str, list[int]]|None = None) -> mo.Html:
+def search_summary(report: Report, terms: Term|TermCollection = TERMS_ALL) -> mo.Html:
     '''
     Create a marimo accordian showing search results for the given terms and chunks.
 
@@ -80,21 +93,16 @@ def search_summary(chunks: list[str]|dict[int, str]|str, terms: Term|TermCollect
     mo.Html
         A marimo accordion showing the search results, with terms as top-level accordions and chunks
     '''
-    
-
+    search_res = report.search_results(terms)
     if search_res is None:
-        search_res = search_chunks(chunks, terms)
+        raise FileNotFoundError(f'Search results not found for report {report.name} and terms {terms.folder_name}. Please run `search_chunks` first to generate search results.')
 
     # enforce dict format
-    if isinstance(chunks, list):
-        chunks_dict = {i: chunk for i, chunk in enumerate(chunks)}
-    elif isinstance(chunks, dict):
-        chunks_dict = chunks
-    elif isinstance(chunks, str) and os.path.isdir(chunks):
-        chunks_dict = {int(f.split('-')[1].split('.')[0]): open(os.path.join(chunks, f)).read() for f in sorted(os.listdir(chunks)) if f.endswith('.md')}
-    else:
-        raise ValueError(f'chunks must be either a list of strings, a dictionary of int: str, or a directory path containing chunk markdown files. Got {type(chunks)}')
-
+    chunks = report.chunks_dir
+    if chunks is None:
+        raise FileNotFoundError(f'Chunks directory not found for report {report.name}. Please run `search_chunks` first to generate search results and ensure chunks are saved in the expected directory structure.')
+    chunks_dict = {int(f.split('-')[1].split('.')[0]): open(os.path.join(chunks, f)).read() for f in sorted(os.listdir(chunks)) if f.endswith('.md')}
+    
     master_accordion_content = {}
     for term in terms:
         # display the chunks where the term was found, with the term highlighted
