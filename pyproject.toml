@@ -28,6 +28,7 @@ pydantic = ">=2.13.4,<3"
 instructor = ">=1.15.1,<2"
 openai = ">=2.38.0,<3"
 anthropic = ">=0.76.0,<0.77"
+altair-all = ">=6.2.1,<7"
 
 [tool.pixi.pypi-dependencies]
 pymupdf4llm = ">=1.27.2.1"

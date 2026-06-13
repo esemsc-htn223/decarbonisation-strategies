@@ -19,11 +19,10 @@ def _():
     import matplotlib.pyplot as plt
     import matplotlib as mpl
     import numpy as np
-    import pymupdf4llm
-    import pymupdf
     import tiktoken
     import json
     import os
+    import altair as alt
     from dotenv import load_dotenv
     load_dotenv()
 
@@ -42,6 +41,7 @@ def _():
         TERMS_SUMMARY,
         Term,
         TermCollection,
+        alt,
         companies,
         inspection,
         json,
@@ -510,19 +510,19 @@ def _():
     stg_map = {
         "research and development": {
             'alias': "1/4 - R&D",
-            'style': {'color': '#facfd2'}
+            'style': {'color': '#87CEEB'}
         },
         "pilot": {
             'alias': "2/4 - Pilot",
-            'style': {'color': "#ff8085"}
+            'style': {'color': "#1E90FF"}
         },
         "demonstration": {
             'alias': "3/4 - Demonstration",
-            'style': {'color': '#e65054'}
+            'style': {'color': '#4169E1'}
         },
         "commercial-deployment": {
             'alias': "4/4 - Deployment",
-            'style': {'color': '#b32d2e'}
+            'style': {'color': '#000080'}
         },
         "unclear": {
             'alias': "-. - Unclear",
@@ -534,11 +534,11 @@ def _():
     mat_map = {
         "emerging": {
             'alias': "1/3 - Emerging",
-            'style': {'color': '#a8e6cf'}
+            'style': {'color': '#DDA0DD'}
         },
         "established": {
             'alias': "2/3 - Established",
-            'style': {'color': '#5d8aa8'}
+            'style': {'color': '#ba55d3'}
         },
         "phasing-out": {
             'alias': "3/3 - Phasing Out",
@@ -550,58 +550,6 @@ def _():
         }
     }
     return mat_map, stg_map
-
-
-@app.cell
-def _(TERMS_ALL, companies, df_exxon_test, inspection, mat_map, mo, stg_map):
-    _entry = df_exxon_test.iloc[0]
-    _co = _entry['company_alias']
-    _rt = _entry['report_type']
-    _yr = _entry['year']
-
-    _mat = _entry['maturity']
-    _mat_map = mat_map.get(_mat, {'alias': _mat.title(), 'style': {}})
-    _mat_style = '; '.join(f"{_k}: {_v}" for _k, _v in _mat_map["style"].items())
-    _stg = _entry['stage']
-    _stg_map = stg_map.get(_stg, {'alias': _stg.title(), 'style': {}})
-    _stg_style = '; '.join(f"{_k}: {_v}" for _k, _v in _stg_map["style"].items())
-    _snt = _entry['sentiment']
-
-    _chunks = inspection.search_results_chunks(companies.Report.from_metadata(_co, _rt, _yr), TERMS_ALL, _entry['term_alias'])
-    mo.accordion(
-        {
-            _entry['year']: mo.vstack([
-                mo.vstack([
-                    _entry['notes'],
-                    mo.md('---'),
-                    mo.hstack([
-                        mo.md(f'**Sentiment:** {_snt}'),
-                        mo.md('|'),
-                        mo.md(f'**Stage:** <span style="{_stg_style}">{_stg_map["alias"]}</span>'),
-                        mo.md('|'),
-                        mo.md(f'**Maturity:** <span style="{_mat_style}">{_mat_map["alias"]}</span>'),
-                    ], justify = 'center')
-                ]),
-                mo.md('---'),
-                mo.accordion({
-                    f'{len(_chunks)} Chunk{"s" if len(_chunks) != 1 else ""}:': mo.vstack(_chunks.values()),
-                }),
-
-            ])
-        }
-    )
-    return
-
-
-@app.cell
-def _(df_exxon_test, mo):
-    term_dropdown = mo.ui.dropdown(
-        df_exxon_test['term_alias']
-    )
-    rt_dropdown = mo.ui.dropdown(
-        df_exxon_test['report_type']
-    )
-    return
 
 
 @app.cell
@@ -645,7 +593,7 @@ def _(
             count += len(list(matches))
         return count
 
-    def term_year_analysis(entry: pd.Series, terms: TermCollection, *, return_key: bool = False) -> mo.Html:
+    def term_year_analysis(entry: pd.Series, terms: TermCollection, *, return_key: bool = False, lazy_chunks: bool = True) -> mo.Html:
         co = entry['company_alias']
         rt = entry['report_type']
         yr = entry['year']
@@ -694,8 +642,8 @@ def _(
                     mo.md('---'),
 
                     mo.accordion({
-                        f'{len(chunks)} Chunk{"s" if len(chunks) != 1 else ""}:': mo.vstack(chunks),
-                    }),
+                        f'{len(chunks)} Chunk{"s" if len(chunks) != 1 else ""}:': mo.vstack(chunks)
+                    }, lazy = lazy_chunks),
                 ])
         if return_key:
             snt_cmap = mpl.colormaps['RdYlGn'].resampled(21)
@@ -711,9 +659,77 @@ def _(
 
 
 @app.cell
-def _(TERMS_ALL, companies, df_exxon_test, mo, term_year_analysis, util):
+def _(Term, alt, df_exxon_test, mo, pd):
+    def sentiment_timeseries(term:Term, report_type:str, *, width_px:int = 1000, height_px:int = 250) -> mo.Html:
+    
+        chart = alt.Chart(df_exxon_test[(df_exxon_test['term_alias'] == term.alias) & (df_exxon_test['report_type'] == report_type)])
+    
+        lines = chart.mark_point(color = term.colour).encode(
+                    x = alt.X('year:O')
+                        .scale(domain = sorted(df_exxon_test['year'].unique()))
+                        .axis(title = None, labelAngle = -45, offset = -height_px//2, 
+                              labelPadding = height_px//2 + 5, # +5 to account for missing ticks (default height of 5px)
+                              tickSize = 0
+                              )
+                    ,
+                    y = alt.Y('sentiment:Q', title = 'Sentiment')
+                        .scale(domain = [-1, 1])
+                    ,
+                
+                    tooltip = [
+                        alt.Tooltip('year:O', title = 'Report Year'),
+                        alt.Tooltip('sentiment:Q', title = 'Sentiment'),
+                        alt.Tooltip('stage:N', title = 'Stage'),
+                        alt.Tooltip('maturity:N', title = 'Maturity'),
+                    ]
+                ).properties(
+                    #title = f'Sentiment over Time for {term.alias}',
+                    width = width_px,
+                    height = height_px
+            )
+        # mark missing data with shaded region
+        # get years where report wasn't published
+        no_reports_years = sorted(set(df_exxon_test['year'].unique()) - set(df_exxon_test[df_exxon_test['report_type'] == report_type]['year'].unique()))
+        if no_reports_years:
+            no_reports_df = pd.DataFrame({'year': no_reports_years})
+            no_reports_chart = alt.Chart(no_reports_df).mark_rect(opacity=0.2, color='black').encode(
+                x=alt.X('year:O', title='Report Year'),
+                y=alt.value(0),
+                y2=alt.value(height_px),
+                # disable tooltip
+                tooltip=alt.value('Report not published')
+            )
+            lines = no_reports_chart + lines
+        # years with no term mentions
+        missing_years = sorted(set(df_exxon_test['year'].unique()) - set(df_exxon_test[(df_exxon_test['term_alias'] == term.alias) & (df_exxon_test['report_type'] == report_type)]['year'].unique()) - set(no_reports_years))
+        if missing_years:
+            missing_df = pd.DataFrame({'year': missing_years})
+            missing_chart = alt.Chart(missing_df).mark_rect(opacity=0.2, color='gray').encode(
+                x=alt.X('year:O', title='Report Year'),
+                y=alt.value(0),
+                y2=alt.value(height_px),
+                # disable tooltip
+                tooltip=alt.value('Term not mentioned')
+            )
+            lines = missing_chart + lines
+        return mo.ui.altair_chart(lines, chart_selection = False, legend_selection = False)
+
+    return (sentiment_timeseries,)
+
+
+@app.cell
+def _(
+    TERMS_ALL,
+    companies,
+    df_exxon_test,
+    mo,
+    sentiment_timeseries,
+    term_year_analysis,
+    util,
+):
     co_tabs = {}
     for _co in df_exxon_test['company'].unique():
+        _co_alias = companies.COMPANY_ALIASES.get(_co, _co)
         rt_tabs = {}
         for _rt in df_exxon_test['report_type'].unique():
             _term_tabs = {}
@@ -722,6 +738,10 @@ def _(TERMS_ALL, companies, df_exxon_test, mo, term_year_analysis, util):
                 _regex = df_exxon_test[df_exxon_test['term_alias'] == _term]['term_regex'].iloc[0]
                 _df_term = df_exxon_test[(df_exxon_test['report_type'] == _rt) & (df_exxon_test['term_alias'] == _term)]
                 if _df_term.empty:
+                    _term_tabs[f'<span style="color: lightcoral">{_term}</span>'] = mo.vstack([
+                        mo.ui.text_area(value = _regex, full_width = True, label = '**Regex:**'),
+                        mo.md(f'> <span style="color: lightcoral"> No mentions of "{_term}" in {_co_alias}\'s {_rt_long.lower()} reports.</span>'),
+                    ])
                     continue
                 _yr_accordion = {}
                 for _yr in _df_term['year'].unique():
@@ -730,11 +750,14 @@ def _(TERMS_ALL, companies, df_exxon_test, mo, term_year_analysis, util):
                     _yr_accordion[_key] = _value
 
                 _term_tabs[_term] = mo.vstack([
+                    mo.lazy(sentiment_timeseries(TERMS_ALL[_term], _rt)),
                     mo.ui.text_area(value = _regex, full_width = True, label = '**Regex:**'),
                     mo.accordion(_yr_accordion)
                 ])
             rt_tabs[_rt_long] = mo.ui.tabs(_term_tabs, label = 'Term')
-        co_tabs[companies.COMPANY_ALIASES.get(_co, _co)] = mo.ui.tabs(rt_tabs, label = 'Report Type')
+        co_tabs[_co_alias] = mo.ui.tabs(rt_tabs, label = 'Report Type')
+
+
     mo.ui.tabs(co_tabs, label = 'Company')
     return
 
@@ -754,12 +777,6 @@ def _(mo):
 
     -
     """)
-    return
-
-
-@app.cell
-def _(inspection):
-    inspection.search_summary()
     return
 
 
