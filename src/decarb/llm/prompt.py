@@ -1,6 +1,6 @@
 from dataclasses import dataclass
 import io
-from typing import Literal, Iterator
+from typing import Literal, Iterator, Union
 import os
 from dotenv import load_dotenv
 from openai import OpenAI
@@ -122,7 +122,7 @@ def construct_prompt(
     save_path = report._prompt_path(term.collection, term) if save_as is None else save_as
     if not save_path.endswith('.txt'):
         raise ValueError(f'save_as should be a path ending with .txt. Got {save_path}')
-
+ 
     co_alias = report.company.full_name
     year = report.year    
     report_alias = REPORT_TYPES_LONG.get(report.report_type, report.report_type.replace('-', ' '))
@@ -132,28 +132,24 @@ def construct_prompt(
         overlap_strategy=overlap_strategy, overlap_amount=overlap_amount
     )
     
-    overlap_info = "\n"
-    if overlap_strategy is not None and overlap_amount > 0:
-        overlap_info += f"Extracts include {overlap_amount:.0%} of"
-        if overlap_strategy in ['before', 'both']:
-            overlap_info += " the previous "
-        if overlap_strategy in ['after', 'both']:
-            if overlap_strategy in ['both']:
-                overlap_info += "and"
-            overlap_info += " following section"
-            if overlap_strategy in ['both']:
-                overlap_info += "s"
-        overlap_info += f" of the report to provide additional context."
-
     prompt = f'''The following extracts have been taken from {co_alias}'s {year} {report_alias} and all relate to {term.prompt_alias}. 
 
 Use the contained information to answer the following questions:
 1. "How positive or negative is the overall sentiment towards {term.prompt_alias}?"
-2. "What key commitments has {co_alias} made to {term.prompt_alias}?"
-3. "At what stage of implementation is {term.prompt_alias}?"
-4. "How mature does {co_alias} consider {term.prompt_alias} to be?"
+2. "How mature is {term.prompt_alias} framed to be, in terms of Techonology Readiness Levels?"
+3. "At what stage of commercialisation is {term.prompt_alias} within {co_alias}?"
+4. "What commitments has {co_alias} made towards {term.prompt_alias}?"
 
-{overlap_info}
+Use the IEA's definitions for Technology Readiness Levels (TRLs), which are as follows:
+1. Initial idea reported: Basic principles have been defined
+2. Application formulated: Concept and application have been formulated
+3. Components tested: Critical functions proven experimentally without all components integrated
+4. Early prototype tested: First prototype successfully tested in non-representative conditions
+5. Large prototype tested: Integrated components proven in representative operational conditions
+6. Prototype operated in real conditions: Prototype proven at a representative scale and in conditions to be deployed
+7. Validated at pre-commercial scale: System demonstrated sufficiently to move to full-scale
+8. First-of-a-kind commercial scale commissioned: Commercial scale realised in real-world environment
+9. Technically ready for sale or licensing: Successfully operated and commercially available with technology guarantees. Ready for further learning-by-doing.
 
 # Extracts:
 -----------
@@ -200,22 +196,47 @@ def prompt_id(report:Report, term:str|Term) -> str:
     
     return f"{report.company.folder_name}_{report.report_type}_{report.year}_{term_alias}".lower().replace(' ', '-').replace('(', '').replace(')', '')
 
+
+class QuoteEvidence(BaseModel):
+    quote: str = Field(description="Direct quote from the source text")
+    justification: str = Field(description="Explanation of why this quote is relevant as evidence")
+
+class CommitmentWithEvidence(BaseModel):
+    commitment: str = Field(description="A specific commitment made by the company")
+    quote: str = Field(description="Direct quote from the source text evidencing this commitment")
+    justification: str = Field(description="Explanation of how the quote evidences the commitment")
+
 class PromptResponse(BaseModel):
-    sentiment: float = Field(
+    # Question 1: "How positive or negative is the overall sentiment towards {term.prompt_alias}?"
+    q1_sentiment: float = Field(
         description="Question 1: Sentiment towards the technology, on a scale from -1 (totally negative) to 1 (totally positive)",
         ge=-1.0, le=1.0
     )
-    commitments: list[str] = Field(
-        description="Question 2: Key extracts or quotes showing commitments towards the technology."
+    q1_sentiment_quotes: list[QuoteEvidence] = Field(
+        description="Quotes reflecting sentiment towards the technology and a justification for their inclusion. Given as evidence for the sentiment score given in q1_sentiment."  
     )
-    stage: Literal["commercial-deployment", "demonstration", "pilot", "research and development", "unclear"] = Field(
-        description="Question 3: Stage of implementation of the technology"
+
+    # Question 2: "How mature is {term.prompt_alias} framed to be, in terms of Techonology Readiness Levels?"
+    q2_maturity: int = Field(
+        description="Question 2: The Technology Readiness Level (TRL) of the technology, 1 to 9. Definitions provided in the prompt.",
+        ge=1, le=9
     )
-    maturity: Literal["emerging", "established", "phasing-out", "unclear"] = Field(
-        description="Question 4: How mature the company considers the technology to be"
+
+    q2_maturity_quotes: list[QuoteEvidence] = Field(
+        description="Quotes reflecting the Technology Readiness Level (TRL) of the technology and a justification for their inclusion. Given as evidence for the maturity given in q2_maturity."
     )
-    notes: str|None = Field(default=None,
-        description="Additional notes or caveats about the company's stance towards the term, or the quality of the extracts"
+
+    # Question 3: "What stage of commercialisation is {term.prompt_alias} at within the company's operations?"
+    q3_stage: Literal["research and development", "pilot", "demonstration", "commercial-deployment", "phasing-out", "unclear"] = Field(
+        description="Question 3: The technology's stage of commercialisation within the company's operations."
+    )
+    q3_stage_quotes: list[QuoteEvidence] = Field(
+        description="Quotes reflecting the technology's stage of commercialisation within the company's operations and a justification for their inclusion. Given as evidence for the stage of commercialisation given in q3_stage."
+    )
+
+    # Question 4: "What commitments does the company make towards {term.prompt_alias}?"
+    q4_commitments: list[CommitmentWithEvidence] = Field(
+        description="Question 4: Commitments made towards the technology."
     )
 
 class AnalysisRecord(BaseModel):
@@ -658,7 +679,7 @@ def retrieve_batch_results(batch_id:str, *,
     Returns
     -------
     list[dict]|None
-        The batch results, as a list of dictionaries, or None if return_results is False.
+        The batch results, as a list of dictionaries, or None if the batch is not completed.
     '''
     load_dotenv()
     client = OpenAI()
@@ -688,7 +709,8 @@ def retrieve_batch_results(batch_id:str, *,
             if batch_file_path:
                 break
         term_coll = os.path.basename(os.path.dirname(os.path.dirname(batch_file_path)))
-        save_path = save_as or os.path.join(OUT_DIR, term_coll, f'{batch_id}_results.json')
+        save_path = save_as or os.path.join(OUT_DIR, term_coll, 'batch-results', f'{batch_id}.json')
+        os.makedirs(os.path.dirname(save_path), exist_ok=True)
         with open(save_path, 'w') as f:
             json.dump(results, f, indent=4)
         logger_llm.debug(f'BATCH RESULTS SAVED: {batch.id} at {save_path}')
