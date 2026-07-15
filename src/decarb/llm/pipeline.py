@@ -198,6 +198,7 @@ def stage_submit(model: str = DEFAULT_MODEL, *,
                  portion_size: int = 3_000,
                  encoding: str = 'cl100k_base',
                  companies: Company|CompanyCollection = None, 
+                 terms: TermCollection|None = None,
                  overwrite: bool = False):
     '''
     Submit all prompts created in stage_draft for analysis, and save the batch details as json files.
@@ -213,19 +214,26 @@ def stage_submit(model: str = DEFAULT_MODEL, *,
         The name of the token encoding to use for counting tokens in the prompts. Defaults to 'cl100k_base'.
     companies : Company, CompanyCollection or None
         The company or companies to include in the analysis. If None, includes all companies for which prompts have been drafted. Defaults to None.
+    terms : TermCollection or None
+        The collection of terms to include in the analysis. If None, includes all terms for which prompts have been drafted. Defaults to None.
     overwrite : bool
         Whether to overwrite existing analysis results. Defaults to False.
     '''
     # collect all prompt file paths. assuming all text files are to be analysed.
     file_paths = []
     for report in co_files(yield_level='Report', companies=companies):
-        for term_folder in report.term_folder_names():
+        if terms is not None:
+            term_folder_names = [term.alias for term in terms]
+        else:
+            term_folder_names = report.term_folder_names()
+
+        for term_folder in term_folder_names:
             if report.prompts_dir(term_folder) is None:
                 continue
             for prompt_file in os.listdir(report.prompts_dir(term_folder)):
                 if prompt_file.endswith('.txt'):
                     file_paths.append(report.prompt_path(term_folder, prompt_file))
-    logger_llm.info(f'COLLECTED PROMPTS: {len(file_paths)} prompt files found in .{len(list(co_files(yield_level="Report", companies=companies)))} reports.')
+    logger_llm.info(f'COLLECTED PROMPTS: terms={terms} {len(file_paths)} prompt files found in .{len(list(co_files(yield_level="Report", companies=companies)))} reports.')
 
     # create jsonl for openai batch
     jsonl_path = create_openai_jsonl(
@@ -263,7 +271,8 @@ def stage_submit(model: str = DEFAULT_MODEL, *,
     with open(info_path, 'w') as f:
         json.dump(portion_info, f, indent=4)
     
-def stage_retrieve(batch_ids: Iterable[str]):
+def stage_retrieve(batch_ids: Iterable[str]|None = None, *, 
+                   progress_bar: bool = True, verbose: bool = False):
     '''
     Retrieve the results of the submitted batches, saving the results as json files in the 
     output directory for the relevant term collection. If batches have not yet completed,
@@ -273,19 +282,49 @@ def stage_retrieve(batch_ids: Iterable[str]):
     ----------
     batch_ids : Iterable[str]
         The IDs of the batches to retrieve results for.
+    progress_bar : bool
+        Whether to display a progress bar. Defaults to True.
+    verbose : bool
+        Whether to print detailed information about the batch retrieval process. Defaults to False.
+        If progress_bar is True, printing is limited to avoid cluttering the progress bar output.
     '''
-    for batch_id in batch_ids:
+    if batch_ids is None:
+        # Retrieve all batch IDs from the portions info file
+        batch_ids = []
+        for root, dirs, files in os.walk(TERMS_DIR):
+            for file in files:
+                if file.startswith('portions-info-') and file.endswith('.json'):
+                    with open(os.path.join(root, file), 'r') as f:
+                        info = json.load(f)
+                        batch_ids.extend(list(info['batches'].keys()))
+
+    n_working = 0
+    n_stopped = 0
+    n_completed = 0
+
+    for batch_id in tqdm(batch_ids, disable = not progress_bar):
         while True:
             batch_info = check_batch_status(batch_id)
             status = batch_info.get('status')
             logger_llm.info(f'BATCH CHECKED {batch_id}: {status}. ')
             if status == 'completed':
+                n_completed += 1
+                if not progress_bar and verbose:
+                    print(f'batch completed - {batch_id} - status={status}. retrieving results.')
                 retrieve_batch_results(batch_id, save=True)
                 break
             elif status in ['validating', 'in_progress', 'finalizing']:
-                print(f'BATCH WORKING {batch_id} - status={status}.')
+                n_working += 1
+                if not progress_bar and verbose:
+                    print(f'batch working - {batch_id} - status={status}.')
                 break
             elif status in ['failed', 'cancelled', 'cancelling', 'expired']:
-                logger_llm.error(f'Batch {batch_id} {status}. Skipping retrieval.')
-                print(f'BATCH STOPPED {batch_id} - status={status}. Skipping retrieval.')
+                n_stopped += 1
+                logger_llm.error(f'Batch {batch_id} {status}. skipping retrieval.')
+                if not progress_bar and verbose:
+                    print(f'batch stopped - {batch_id} - status={status}. skipping retrieval.')
                 break
+    
+    if verbose:
+        print(f'retrieval complete. {n_completed} completed, {n_working} working, {n_stopped} stopped / {len(batch_ids)} total.')
+
