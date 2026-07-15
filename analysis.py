@@ -21,28 +21,28 @@ def _():
     import numpy as np
     import tiktoken
     import json
+    import sys
     import os
     import altair as alt
+    import re
+    import requests
     from dotenv import load_dotenv
     load_dotenv()
 
     from decarb import (
-        regex_pipeline, plot_comparison, plot_mentions, plot_rankings, 
         Term, TermCollection, TERMS_ALL, TERMS_SUMMARY, TERMS_SIMPLE,
-        COS, Company
+        COS, Company, util, companies, plotting
     )
-    from decarb import util, companies, plotting
     from decarb.llm import rag, inspection, pipeline, prompt
+    from decarb.comparison import hansard
 
     return (
-        COS,
         TERMS_ALL,
-        TERMS_SIMPLE,
-        TERMS_SUMMARY,
         Term,
         TermCollection,
         alt,
         companies,
+        hansard,
         inspection,
         json,
         load_dotenv,
@@ -52,11 +52,10 @@ def _():
         os,
         pd,
         pipeline,
-        plot_comparison,
         plt,
         prompt,
-        rag,
-        regex_pipeline,
+        re,
+        requests,
         tiktoken,
         util,
     )
@@ -138,82 +137,6 @@ def _(jsonl_path_test, mo, np, plt, prompt):
     _ax_ln.hist(lens, bins=np.arange(0.5, max(lens)+1.5, 1), alpha = 0.7)
     _ax_ln.set_xlabel('Portion length')
     mo.ui.matplotlib(_ax_tk)
-    return
-
-
-@app.cell
-def _(os):
-    _chunks_dir = 'data/companies/bp/annual-report/bp-annual-report-accounts-2007/chunks'
-    chunks = [open(os.path.join(_chunks_dir, _f), 'r').read() for _f in os.listdir(_chunks_dir) if _f.endswith('.md')]
-
-    {
-        #'len(md)': len(md),
-        'sum(out)': sum(len(c) for c in chunks),
-        'no. chunks': len(chunks)
-
-    }
-    return (chunks,)
-
-
-@app.cell
-def _(chunks, inspection):
-    inspection.min_max_chunks(chunks)
-    return
-
-
-@app.cell
-def _(chunks, inspection):
-    # display a random sample of chunks
-    inspection.random_chunks(chunks, n=5)
-    return
-
-
-@app.cell
-def _(chunks, inspection, plt):
-    inspection.chunk_size_hist(chunks)
-
-    plt.show()
-    return
-
-
-@app.cell
-def _(TERMS_ALL, chunks, inspection, rag):
-    terms = TERMS_ALL
-
-    search_res = rag.search_chunks(chunks, terms)
-    inspection.search_summary(chunks, terms, search_res=search_res)
-    return search_res, terms
-
-
-@app.cell
-def _(chunks, inspection, plt, search_res):
-    fig, ax = inspection.plot_search_results(search_res, chunks)
-    plt.grid(which = 'major', axis = 'y', color = 'k')
-    plt.show()
-    return
-
-
-@app.cell
-def _(pipeline):
-    pipeline.stage_convert(overwrite=False, progress_bar=True)
-    return
-
-
-@app.cell
-def _(pipeline):
-    pipeline.stage_chunk(overwrite=False)
-    return
-
-
-@app.cell
-def _(pipeline):
-    pipeline.stage_search(overwrite=True)
-    return
-
-
-@app.cell
-def _(pipeline):
-    pipeline.stage_draft(overwrite=True, progress_bar=True, overlap_strategy = None)
     return
 
 
@@ -562,10 +485,10 @@ def _(
     mo,
     mpl,
     pd,
+    re,
     stg_map,
 ):
     def mark_term_mentions(md: str, term: Term):
-        import re
         matches = re.finditer(term.regex, md, re.I)
         prev_shift = 0
         for match in matches:
@@ -575,22 +498,16 @@ def _(
         return md
 
     def mark_commitments(md: str, commitments: list) -> str:
-        import re
         for commitment in commitments:
-            matches = re.finditer(commitment, md, re.I)
-            prev_shift = 0
-            for match in matches:
-                start, end = match.span()
-                md = md[:start + prev_shift] + f'<mark style="background-color: #ffcccb">{md[start + prev_shift:end + prev_shift]}</mark>' + md[end + prev_shift:]
-                prev_shift += 47  # len('<mark style="background-color: #ffcccb"></mark>')
+            if commitment in md:
+                md = md.replace(commitment, f'<mark style="background-color: #ffcccb">{commitment}</mark>')
         return md
 
     def count_commitment_mentions(md: str, commitments: list) -> int:
-        import re
         count = 0
         for commitment in commitments:
-            matches = re.findall(commitment, md, re.I)
-            count += len(list(matches))
+            if commitment in md:
+                count += 1  # quotes wont appear more than once
         return count
 
     def term_year_analysis(entry: pd.Series, terms: TermCollection, *, return_key: bool = False, lazy_chunks: bool = True) -> mo.Html:
@@ -620,7 +537,7 @@ def _(
                     cmts += f'\n- {cmt}'
             n_quotes = sum(count_commitment_mentions(chunk, entry['commitments']) for chunk in chunks)
             notes += f'\n\n**Commitments:** (quotes: {n_quotes}/{len(entry["commitments"])})\n' + cmts
-    
+
         chunks = [mo.md(
             mark_term_mentions(
                 mark_commitments(chunk, entry['commitments']), 
@@ -661,9 +578,9 @@ def _(
 @app.cell
 def _(Term, alt, df_exxon_test, mo, pd):
     def sentiment_timeseries(term:Term, report_type:str, *, width_px:int = 1000, height_px:int = 250) -> mo.Html:
-    
+
         chart = alt.Chart(df_exxon_test[(df_exxon_test['term_alias'] == term.alias) & (df_exxon_test['report_type'] == report_type)])
-    
+
         lines = chart.mark_point(color = term.colour).encode(
                     x = alt.X('year:O')
                         .scale(domain = sorted(df_exxon_test['year'].unique()))
@@ -675,7 +592,7 @@ def _(Term, alt, df_exxon_test, mo, pd):
                     y = alt.Y('sentiment:Q', title = 'Sentiment')
                         .scale(domain = [-1, 1])
                     ,
-                
+
                     tooltip = [
                         alt.Tooltip('year:O', title = 'Report Year'),
                         alt.Tooltip('sentiment:Q', title = 'Sentiment'),
@@ -740,7 +657,7 @@ def _(
                 if _df_term.empty:
                     _term_tabs[f'<span style="color: lightcoral">{_term}</span>'] = mo.vstack([
                         mo.ui.text_area(value = _regex, full_width = True, label = '**Regex:**'),
-                        mo.md(f'> <span style="color: lightcoral"> No mentions of "{_term}" in {_co_alias}\'s {_rt_long.lower()} reports.</span>'),
+                        mo.md(f'> <span style="color: lightcoral"> The above regex for term "{_term}" found no matches in {_co_alias}\'s {_rt_long.lower()}s.</span>'),
                     ])
                     continue
                 _yr_accordion = {}
@@ -762,27 +679,150 @@ def _(
     return
 
 
+@app.cell
+def _(companies, df_exxon_test):
+    _row = df_exxon_test[(df_exxon_test['year'] == '2007') & (df_exxon_test['term_alias'] == 'Biofuel') & (df_exxon_test['report_type'].str.contains('annual'))]
+    companies.Report.from_metadata(_row['company'].values[0], _row['report_type'].values[0], _row['year'].values[0]).dir
+    return
+
+
 @app.cell(hide_code=True)
 def _(mo):
     mo.md(r"""
     Notes:
+    - 'sentiment'
+        - Happy as is really. I guess the main crique is it's quite hard to critique - needs a more firm methodology.
+            - Examples in the prompt?
+        - What does it really mean? How positively or negatively the technology is discussed.
+    - 'stage'
+        - I still don't really have an intuition of how this is different from maturity. Maybe these two should be separated into 'how the company believes it is viewed by the industry', and 'how
+    - 'maturity'
+        - feel like this conceptually has too much overlap with 'stage'
+        - Should clarify if this is the maturity of the company's implementation, or the maturity of the company's
+
     - 'commitments'
         - field isn't made up of quotes - it's summaries from the text.
         - doesn't seem to be future-looking commitments. sometimes its just extracts of certain statements of some maybe related thing.
             - should separate out to 'key quotes' and 'future commitments'
 
-    - 'maturity'
-        - feel like this conceptually has too much overlap with 'stage'
-        - Should clarify if this is the maturity of the company's implementation, or the maturity of the company's
 
-    -
+    ---
+    OLD:
+    ```python
+    class PromptResponse(BaseModel):
+        sentiment: float = Field(
+            description="Question 1: Sentiment towards the technology, on a scale from -1 (totally negative) to 1 (totally positive)",
+            ge=-1.0, le=1.0
+        )
+        commitments: list[str] = Field(
+            description="Question 2: Key extracts or quotes showing commitments towards the technology."
+        )
+        stage: Literal["commercial-deployment", "demonstration", "pilot", "research and development", "unclear"] = Field(
+            description="Question 3: Stage of implementation of the technology"
+        )
+        maturity: Literal["emerging", "established", "phasing-out", "unclear"] = Field(
+            description="Question 4: How mature the company considers the technology to be"
+        )
+        notes: str|None = Field(default=None,
+            description="Additional notes or caveats about the company's stance towards the term, or the quality of the extracts"
+        )
+    ```
+
+    And in the prompt:
+    ```python
+    1. "How positive or negative is the overall sentiment towards {term.prompt_alias}?"
+    2. "What key commitments has {co_alias} made to {term.prompt_alias}?"
+    3. "At what stage of implementation is {term.prompt_alias}?"
+    4. "How mature does {co_alias} consider {term.prompt_alias} to be?"
+    ```
+
+
+    ---
+    NEW:
+    ```python
+    class PromptResponse(BaseModel):
+        sentiment: float = Field(
+            description="Question 1: Sentiment towards the technology, on a scale from -1 (totally negative) to 1 (totally positive)",
+            ge=-1.0, le=1.0
+        )
+        quotes: list[str] = Field(
+            description="Question 2: Key quotes reflecting sentiment towards the technology."  # or should this be quotes reflecting maturity? or any of the other questions? or all?
+        )
+        commitments: list[str] = Field(
+            description="Question 3: Key extracts or quotes showing commitments towards the technology."
+        )
+        maturity: Literal["emerging", "established", "phasing-out", "unclear"] = Field(
+            description="Question 4: How mature the report frames the technology to be"
+        )
+        stage: Literal["commercial-deployment", "demonstration", "pilot", "research and development", "unclear"] = Field(
+            description="Question 5: Stage of implementation of the technology"
+        )
+        notes: str|None = Field(default=None,
+            description="Additional notes or caveats about the company's stance towards the term, or the quality of the extracts"
+        )
+    ```
+
+    And in the prompt:
+    ```python
+    1. "How positive or negative is the overall sentiment towards {term.prompt_alias}?"
+    2. "How mature is {term.prompt_alias} framed to be?"
+    3. "At what stage of commercialisation is {term.prompt_alias} within the {co_alias}'s operations?"
+    4. "What key commitments has {co_alias} made towards {term.prompt_alias}?"
+    ```
     """)
     return
 
 
 @app.cell
-def _(TERMS_ALL):
-    TERMS_ALL['solar'].dash
+def _():
+    from pydantic import Field, BaseModel
+    from typing import Literal
+    class PromptResponse(BaseModel):
+        # Question 1: "How positive or negative is the overall sentiment towards {term.prompt_alias}?"
+        sentiment: float = Field(
+            description="Question 1: Sentiment towards the technology, on a scale from -1 (totally negative) to 1 (totally positive)",
+            ge=-1.0, le=1.0
+        )
+        sentiment_quotes: list[tuple[str, str]] = Field(
+            description="Quotes reflecting sentiment towards the technology and a justification for their inclusion. Given as evidence for the sentiment score given in Question 1."  
+        )
+        sentiment_justification: str = Field(
+            description="Overall justification for the sentiment score given in Question 1."
+        )
+
+        # Question 2: "How mature is {term.prompt_alias} framed to be?"
+        maturity: Literal["unproven", "emerging", "established", "unclear"] = Field(
+            description="Question 2: How mature the report frames the technology to be"
+        )
+        maturity_quotes: list[tuple[str, str]] = Field(
+            description="Quotes reflecting how mature the report frames the technology to be and a justification for their inclusion. Given as evidence for the maturity listed in Question 2."
+        )
+        maturity_justification: str = Field(
+            description="Overall justification for the maturity listed in Question 2."
+        )
+
+        # Question 3: "What stage of commercialisation is {term.prompt_alias} at within the company's operations?"
+        stage: Literal["research and development", "pilot", "demonstration", "commercial-deployment", "phasing-out", "unclear"] = Field(
+            description="Question 3: The technology's stage of commercialisation within the company's operations."
+        )
+        stage_quotes: list[tuple[str, str]] = Field(
+            description="Quotes reflecting the technology's stage of commercialisation within the company's operations and a justification for their inclusion. Given as evidence for the stage of commercialisation listed in Question 3."
+        )
+        stage_justification: str = Field(
+            description="Overall justification for the stage of commercialisation listed in Question 3."
+        )
+
+        commitments: list[str] = Field(
+            description="Question 4: Key extracts or quotes showing commitments towards the technology."
+        )
+        commitments_quotes: list[tuple[str, str]] = Field(
+            description="Quotes reflecting commitments towards the technology and a justification for their inclusion. Given as evidence for the commitments listed in Question 4."  
+        )
+        commitments_justification: str = Field(
+            description="Overall justification for the commitments listed in Question 4."
+        )
+
+
     return
 
 
@@ -825,39 +865,41 @@ def _(TERMS_ALL, df_exxon_test, plt):
 @app.cell(hide_code=True)
 def _(mo):
     mo.md(r"""
-    # Regex Pipeline
+    # Hansard
     """)
     return
 
 
 @app.cell
-def _(COS, TERMS_ALL, TERMS_SIMPLE, TERMS_SUMMARY, regex_pipeline):
-    out = regex_pipeline(TERMS_ALL, COS, reprocess=False, plot=True)
-    out_sum = regex_pipeline(TERMS_SUMMARY, COS, reprocess=False, plot=True)
-    out_simple = regex_pipeline(TERMS_SIMPLE, COS, reprocess=True, plot=True)
-    return (out_simple,)
-
-
-@app.cell
-def _(TERMS_SIMPLE, out_simple, plot_comparison, plt):
-    plot_comparison(out_simple['dfs'], terms = TERMS_SIMPLE, suptitle='Technology mentions - normalised by word count')
-    plt.show()
+def _(hansard, requests):
+    requests.get(hansard.HANSARD_API_BASE_URL + '/debates/debate/13032161001077.json').json()
     return
 
 
 @app.cell
-def _(COS, TERMS_SIMPLE, out_simple, plot_comparison, plt):
-    plot_comparison(out_simple['dfs_unnormed'], terms=TERMS_SIMPLE, cos=COS, normed_by=None,
-                    suptitle='Technology mentions - unnormalised')
-    plt.show()
+def _(hansard):
+    hansard.search_debates(None, skip = 100)
     return
 
 
 @app.cell
-def _(COS, TERMS_SIMPLE, out_simple, plot_comparison, plt):
-    plot_comparison(out_simple['dfs_unnormed'], terms=TERMS_SIMPLE, cos=COS[:2], rank=True,
-                    suptitle='Technology mention rankings')
-    plt.show()
+def _():
+    {'queryParameters.date', 'queryParameters.committeeTitle', 'queryParameters.includeFormer', 'queryParameters.withDivision', 'queryParameters.divisionId', 'queryParameters.orderBy', 'queryParameters.debateSectionId', 'queryParameters.department', 'queryParameters.house', 'queryParameters.timelineGroupingSize', 'queryParameters.includeCommitteeDivisions', 'queryParameters.memberIds', 'queryParameters.startDate', 'queryParameters.committeeType', 'queryParameters.seriesNumber', 'queryParameters.columnNumber', 'queryParameters.searchTerm', 'queryParameters.hansardIdentifier', 'queryParameters.debateType', 'queryParameters.memberId', 'queryParameters.section', 'queryParameters.endDate', 'queryParameters.volumeNumber', 'queryParameters.includeCurrent', 'format', 'queryParameters.skip', 'queryParameters.outputType', 'queryParameters.take'}
+    return
+
+
+@app.cell
+def _(requests):
+    hansard_api_spec = requests.get('https://hansard-api.parliament.uk/swagger/docs/v1').json()
+    hansard_api_spec
+    return
+
+
+@app.cell
+def _():
+    import xml
+
+    xml.etree.ElementTree()
     return
 
 
