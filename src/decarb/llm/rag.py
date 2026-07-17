@@ -5,14 +5,12 @@ import pymupdf
 import re
 from langchain_text_splitters import MarkdownHeaderTextSplitter, RecursiveCharacterTextSplitter
 from langchain_core.documents import Document
-from concurrent.futures import ThreadPoolExecutor, ProcessPoolExecutor, as_completed
 from dotenv import load_dotenv
-from typing import Iterable, Literal
 import json
 
-from decarb.companies import Company, Report
-from decarb.regex.terms import Term, TermCollection, TERMS_ALL
-from decarb.util import logger_llm, DATA_DIR, REPORT_TYPES_SHORT, COMPANIES_DIR
+from decarb.companies import Report
+from decarb.terms import Term, TermCollection, TERMS_ALL
+from decarb.util import logger_llm
 
 
 load_dotenv()  # in case TESSDATA_PREFIX is in .env - required for ocr of troublesome docs

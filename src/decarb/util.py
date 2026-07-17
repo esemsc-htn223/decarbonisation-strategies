@@ -2,7 +2,6 @@ __all__ = ['logger', 'DATA_DIR', 'OUT_DIR']
 
 import logging
 import os
-from dataclasses import dataclass
 
 # Data directories
 DATA_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..', 'data'))

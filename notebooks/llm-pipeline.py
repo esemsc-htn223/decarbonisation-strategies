@@ -17,26 +17,15 @@ def _():
     import pandas as pd
     import marimo as mo
     import matplotlib.pyplot as plt
-    import matplotlib as mpl
-    import numpy as np
-    import tiktoken
-    import json
-    import sys
     import os
-    import altair as alt
-    import re
-    import requests
     from dotenv import load_dotenv
     load_dotenv()
 
-    from decarb import (
-        Term, TermCollection, TERMS_ALL, TERMS_SUMMARY, TERMS_SIMPLE,
-        COS, Company, util, companies, plotting
-    )
-    from decarb.llm import rag, inspection, pipeline, prompt
-    from decarb.comparison import hansard
+    from decarb.terms import TERMS_ALL, TERMS_SUMMARY, TERMS_SIMPLE
+    from decarb.companies import Company, CompanyCollection, COS
+    from decarb.llm import rag, inspection, pipeline
 
-    return TERMS_ALL, inspection, mo, os, pipeline, plt, rag
+    return COS, TERMS_ALL, inspection, mo, os, pipeline, plt, rag
 
 
 @app.cell(hide_code=True)
@@ -55,7 +44,7 @@ def _(pipeline):
 
 @app.cell
 def _(pipeline):
-    pipeline.stage_chunk(overwrite=False)
+    pipeline.stage_chunk(overwrite=True)
     return
 
 
@@ -72,8 +61,27 @@ def _(pipeline):
 
 
 @app.cell
-def _(pipeline):
-    pipeline.stage_submit(overwrite=True)
+def _():
+    import json
+
+    with open('/Users/hugoneely/Downloads/batch_6a5a23ec80f8819081fc92c27ea2c2ed_output.jsonl', 'r') as f:
+        jsonl = f.read()
+
+    jsonl = jsonl.splitlines()
+    jsonl = [json.loads(line) for line in jsonl]
+    jsonl
+    return json, jsonl
+
+
+@app.cell
+def _(json, jsonl):
+    json.loads(jsonl[0]['response']['body']['choices'][0]['message']['content'])
+    return
+
+
+@app.cell
+def _(COS, pipeline):
+    pipeline.stage_submit(overwrite=True, companies = COS['exxon'])
     return
 
 

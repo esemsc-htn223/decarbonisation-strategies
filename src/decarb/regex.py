@@ -4,12 +4,11 @@ import pandas as pd
 import re
 import os
 import pymupdf
-from typing import Iterable
 
-from .terms import TermCollection, TERMS_ALL
-from ..companies import Company, CompanyCollection
-from ..plotting import plot_comparison
-from ..util import REPORT_TYPES_SHORT
+from decarb.terms import TermCollection, TERMS_ALL
+from decarb.companies import CompanyCollection
+from decarb.plotting import plot_comparison
+from decarb.util import REPORT_TYPES_SHORT
 
 pymupdf.TOOLS.mupdf_display_errors(on = False)
 pymupdf.TOOLS.mupdf_display_warnings(on = False)

@@ -6,8 +6,8 @@ from typing import Iterable, Literal, Union
 import uuid
 import json
 
-from decarb.util import COMPANIES_DIR, TERMS_DIR, logger, REPORT_TYPES
-
+from decarb.util import COMPANIES_DIR, logger, REPORT_TYPES
+from decarb.terms import Term, TermCollection
 
 COMPANY_ALIASES = {
         'shell': 'Shell',
@@ -91,8 +91,8 @@ class Report:
 
     @classmethod
     def from_prompt_id(cls, prompt_id: str):
-        '''Create a Report object from a prompt ID, which is in the format "company_folder/report_type/report_name/term_folder/term_alias".'''
-        company_folder, report_type, report_name, term_alias = prompt_id.split('_')
+        '''Create a Report object from a prompt ID, which is in the format "{company_folder}_{report_type}_{report_name}_{term_folder}_{term.prompt_fname}".'''
+        company_folder, report_type, report_name, term_fname = prompt_id.split('_')
         return cls.from_metadata(company_folder, report_type, report_name)
 
     def __format__(self, format_spec):
@@ -226,94 +226,96 @@ class Report:
     
     
     ### Term-specific files (search results, prompts)
-    def term_folder_names(self) -> list[str]:
+    def term_coll_folder_names(self) -> list[str]:
         '''The names of all term folders for this report.'''
         is_term_folder = lambda f: os.path.isdir(os.path.join(self.dir, f)) and f != 'chunks' and not f.startswith('.')
         return [f for f in os.listdir(self.dir) if is_term_folder(f)]
 
-    def _term_dir(self, term_folder_name: str):
+    def _term_dir(self, terms: TermCollection | str):
         '''The expected location of the term directory for this report and term collection. Does not check whether the directory actually exists.'''
-        if not isinstance(term_folder_name, str):
+        if not isinstance(terms, str):
             try:
-                term_folder_name = term_folder_name.folder_name
+                terms = terms.folder_name
             except AttributeError:
-                raise ValueError(f'term_folder_name should be either a string or an object with a folder_name attribute. Got {type(term_folder_name)}')
-        return os.path.join(self.dir, term_folder_name) 
+                raise ValueError(f'terms should be either a string or a TermCollection object. Got {type(terms)}')
+        return os.path.join(self.dir, terms) 
     
-    def term_dir(self, term_folder_name: str):
+    def term_dir(self, terms: TermCollection | str):
         '''Get the path to the term directory for this report and term collection, if it exists. Otherwise, return None.'''
-        term_folder_path = self._term_dir(term_folder_name)
+        term_folder_path = self._term_dir(terms)
         return term_folder_path if os.path.exists(term_folder_path) else None
     
     
-    def _search_results_path(self, term_folder_name: str):
+    def _search_results_path(self, terms: TermCollection | str):
         '''The expected location of the search results file for this report and term collection. Does not check whether the file actually exists.'''
-        return os.path.join(self._term_dir(term_folder_name), 'search-results.json')
+        return os.path.join(self._term_dir(terms), 'search-results.json')
 
-    def search_results_path(self, term_folder_name: str):
+    def search_results_path(self, terms: TermCollection | str):
         '''Get the path to the search results file for this report and term collection, if it exists. Otherwise, return None.'''
-        search_results_path = self._search_results_path(term_folder_name)
+        search_results_path = self._search_results_path(terms)
         if not os.path.exists(search_results_path):
             return None
         return search_results_path
     
-    def search_results(self, term_folder_name: str):
+    def search_results(self, terms: TermCollection | str):
         '''Get the content of the search results file for this report and term collection, if it exists. Otherwise, return None.'''
-        search_results_path = self.search_results_path(term_folder_name)
+        search_results_path = self.search_results_path(terms)
         if search_results_path is None:
             return None
         with open(search_results_path, 'r') as f:
             return json.load(f)
     
-    def _prompts_dir(self, term_folder_name: str):
+    def _prompts_dir(self, terms: TermCollection | str):
         '''The expected location of the prompts directory for this report and term collection. Does not check whether the directory actually exists.'''
-        return os.path.join(self._term_dir(term_folder_name), 'prompts')
+        return os.path.join(self._term_dir(terms), 'prompts')
 
-    def prompts_dir(self, term_folder_name: str):
+    def prompts_dir(self, terms: TermCollection | str):
         '''Get the path to the prompts directory for this report and term collection, if it exists. Otherwise, return None.'''
-        prompts_dir = self._prompts_dir(term_folder_name)
+        prompts_dir = self._prompts_dir(terms)
         if not os.path.exists(prompts_dir):
             return None
         return prompts_dir
     
-    def prompt_paths(self, term_folder_name: str) -> list[str]:
+    def prompt_paths(self, terms: TermCollection | str) -> list[str]:
         '''Get the paths to all prompt files for this report and term collection, if they exist. Otherwise, raises a ValueError.'''
-        prompts_dir = self.prompts_dir(term_folder_name)
+        prompts_dir = self.prompts_dir(terms)
         if prompts_dir is None:
-            raise ValueError(f'Prompts directory not found for report {self.report_name} and term collection {term_folder_name} at expected location: {self._prompts_dir(term_folder_name)}')
+            raise ValueError(f'Prompts directory not found for report {self.report_name} and term collection {terms} at expected location: {self._prompts_dir(terms)}')
         prompt_files = [f for f in os.listdir(prompts_dir) if f.endswith('.txt')]
         if len(prompt_files) == 0:
-            raise ValueError(f'No prompt files found for report {self.report_name} and term collection {term_folder_name} in prompts directory at expected location: {prompts_dir}')
+            raise ValueError(f'No prompt files found for report {self.report_name} and term collection {terms} in prompts directory at expected location: {prompts_dir}')
         return [os.path.join(prompts_dir, f) for f in prompt_files]
     
 
-    def _prompt_path(self, term_folder_name: str, term_alias: str):
+    def _prompt_path(self, terms: TermCollection | str, term: Term | str):
         '''The expected location of the prompt file for this report, term collection, and term alias. Does not check whether the file actually exists.'''
-        if term_alias.endswith('.txt'):
-            term_alias = term_alias[:-4]
-        return os.path.join(self._prompts_dir(term_folder_name), f'{term_alias}.txt')
+        if not isinstance(term, str):
+            term = term.prompt_fname
+        if not term.endswith('.txt'):
+            term = term + '.txt'
+        return os.path.join(self._prompts_dir(terms), f'{term}')
 
-    def prompt_path(self, term_folder_name: str, term_alias: str):
+    def prompt_path(self, terms: TermCollection | str, term: Term | str):
         '''Get the path to the prompt file for this report, term collection, and term alias, if it exists. Otherwise, return None.'''
-        prompt_path = self._prompt_path(term_folder_name, term_alias)
+        prompt_path = self._prompt_path(terms, term)
         if not os.path.exists(prompt_path):
             return None
         return prompt_path
     
-    def prompt(self, term_folder_name: str, term_alias: str):
+    def prompt(self, terms: TermCollection | str, term: Term | str):
         '''Get the content of the prompt file for this report, term collection, and term alias, if it exists. Otherwise, return None.'''
-        prompt_path = self.prompt_path(term_folder_name, term_alias)
+        prompt_path = self.prompt_path(terms, term)
         if prompt_path is None:
             return None
         return open(prompt_path).read()
     
-    def _prompts_jsonl_path(self, term_folder_name: str):
+    def _prompts_jsonl_path(self, terms: TermCollection | str):
         '''The expected location of the prompts jsonl file for this report and term collection. Does not check whether the file actually exists.'''
-        return os.path.join(self._prompts_dir(term_folder_name), 'prompts.jsonl')
+        return os.path.join(self._prompts_dir(terms), 'prompts.jsonl')
     
-    def prompts_jsonl_path(self, term_folder_name: str):
+    def prompts_jsonl_path(self, terms: TermCollection | str):
         '''Get the path to the prompts jsonl file for this report and term collection, if it exists. Otherwise, return None.'''
-        prompts_jsonl_path = self._prompts_jsonl_path(term_folder_name)
+        prompts_jsonl_path = self._prompts_jsonl_path(terms)
         if not os.path.exists(prompts_jsonl_path):
             return None
         return prompts_jsonl_path
@@ -491,6 +493,12 @@ class CompanyCollection:
     def __len__(self):
         return len(self.companies)
     
+    def __str__(self):
+        return f'CompanyCollection(uuid="{self.uuid}", companies={[co.folder_name for co in self.companies]})'
+
+    def __repr__(self):
+        return self.__str__()
+
     def report_folders(self, *, report_type: str = 'all') -> list[str]:
         '''
         Full paths to all report folders for all companies in this collection and report type. 

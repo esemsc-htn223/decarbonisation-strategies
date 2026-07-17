@@ -10,7 +10,7 @@ from typing import Literal
 from decarb.companies import Report
 
 from decarb.llm.rag import search_chunks
-from decarb.regex.terms import (
+from decarb.terms import (
     Term, TermCollection, TERMS_ALL
 )
 

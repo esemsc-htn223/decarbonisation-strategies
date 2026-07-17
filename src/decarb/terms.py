@@ -59,7 +59,10 @@ class TermCollection:
 
           self.folder = os.path.join(TERMS_DIR, self.folder_name)
           self.json_path = os.path.join(self.folder, 'terms.json')
+          self.batches_folder = os.path.join(self.folder, 'batches')
+          self.prompts_folder = os.path.join(self.folder, 'prompts')
 
+          # set up folder structure
           if not os.path.exists(self.folder):
                os.makedirs(self.folder)
           if not os.path.exists(self.json_path):
@@ -70,6 +73,10 @@ class TermCollection:
                          'regex': term.regex, 
                          'colour': term.colour, 
                          'prompt_alias': term.prompt_alias} for term in self.terms], f, indent=4)
+          if not os.path.exists(self.batches_folder):
+               os.makedirs(self.batches_folder)
+          if not os.path.exists(self.prompts_folder):
+               os.makedirs(self.prompts_folder)
 
           self.uuid = 'terms-' + uuid.uuid5(uuid.NAMESPACE_OID, ''.join([term.alias + term.regex for term in self.terms])).hex
 
@@ -77,14 +84,17 @@ class TermCollection:
 
      @classmethod
      def from_folder(cls, folder_name: str):
-          folder_name = folder_name.replace(' ', '-').lower()
-          json_path = os.path.join(TERMS_DIR, folder_name, 'terms.json')
+          if os.sep in folder_name:
+               fname = os.path.basename(folder_name)
+          else:
+               fname = folder_name.replace(' ', '-').lower()
+          json_path = os.path.join(TERMS_DIR, fname, 'terms.json')
           if not os.path.exists(json_path):
-               raise ValueError(f'TermCollection with folder name {folder_name} does not exist')
+               raise ValueError(f'TermCollection with folder name {fname} does not exist')
           with open(json_path, 'r') as f:
                terms_data = json.load(f)
           terms = [Term(alias=term_data['alias'], regex=term_data['regex'], colour=term_data['colour'], prompt_alias=term_data.get('prompt_alias')) for term_data in terms_data]
-          return cls(terms, folder_name)
+          return cls(terms, fname)
 
      def __iter__(self):
           return iter(self.terms)

@@ -29,11 +29,8 @@ def _():
     from dotenv import load_dotenv
     load_dotenv()
 
-    from decarb import (
-        Term, TermCollection, TERMS_ALL, TERMS_SUMMARY, TERMS_SIMPLE,
-        COS, Company, util, companies, plotting
-    )
-    from decarb.llm import rag, inspection, pipeline, prompt
+    from decarb.terms import Term, TermCollection, TERMS_ALL, TERMS_SUMMARY, TERMS_SIMPLE
+    from decarb import companies, llm, util
     from decarb.comparison import hansard
 
     return (
@@ -43,17 +40,15 @@ def _():
         alt,
         companies,
         hansard,
-        inspection,
         json,
+        llm,
         load_dotenv,
         mo,
         mpl,
         np,
         os,
         pd,
-        pipeline,
         plt,
-        prompt,
         re,
         requests,
         tiktoken,
@@ -70,22 +65,22 @@ def _(mo):
 
 
 @app.cell
-def _(companies, os, prompt):
+def _(companies, llm, os):
     model = 'gpt-4.1'
     overwrite = True
 
     file_paths = []
     for report in companies.co_files(yield_level='Report', companies=None):
-        for term_folder in report.term_folder_names():
+        for term_folder in report.term_coll_folder_names():
             if report.prompts_dir(term_folder) is None:
                 continue
             for prompt_file in os.listdir(report.prompts_dir(term_folder)):
                 if prompt_file.endswith('.txt'):
                     file_paths.append(report.prompt_path(term_folder, prompt_file))
-    #logger_llm.info(f'COLLECTED PROMPTS: {len(file_paths)} prompt files found in .{len(list(companies.co_files(yield_level="Report", companies=companies)))} reports.')
+    #logger_llm.info(f'COLLECTED PROMPTS: {len(file_paths)} prompt files found in .{len(list(reports.co_files(yield_level="Report", companies=companies)))} reports.')
 
     # create jsonl for openai batch
-    jsonl_path_test = prompt.create_openai_jsonl(
+    jsonl_path_test = llm.prompt.create_openai_jsonl(
         prompt_paths=file_paths,
         model=model,
         save=True,
@@ -97,14 +92,14 @@ def _(companies, os, prompt):
 
 
 @app.cell
-def _(jsonl_path_test, mo, np, plt, prompt):
+def _(jsonl_path_test, llm, mo, np, plt):
     _mt = 5000
     _total = 0
     #print(f'Max tokens per batch:\n\t{_mt:,}')
     #print(f'Rate limits:\n\t500,000/min --> ~{5e5//_mt} batches/min\n\t900,000/day --> ~{9e5//_mt} batches/day')
     tokens = []
     lens = []
-    for _i, _portion in enumerate(prompt.jsonl_portions(
+    for _i, _portion in enumerate(llm.prompt.jsonl_portions(
         jsonl_path_test, max_tokens = _mt
     )):
         #print(f'{_i}:\t{_portion}')
@@ -256,78 +251,29 @@ def _(TERMS_ALL, df_tokens, plt):
 
 
 @app.cell
-def _(df_tokens):
-    df_tokens.loc[df_tokens['company'] != 'TotalEnergies', 'cost_batch_gpt5_1'].sum()
-    return
-
-
-@app.cell
-def _(os):
-    for root, dirs, files in os.walk('data/terms/all-terms/prompts/'):
-        for file in files:
-            if file.endswith('.txt'):
-                os.rename(os.path.join(root, file), os.path.join(root, file.replace('_', '-')))
-                print(file + ' -> ' + file.replace('_', '-'))
-    return file, root
-
-
-@app.cell
-def _(file, os, root):
-    os.path.join(root, file.replace('_', '-'))
-    return
-
-
-@app.cell
-def _(TERMS_ALL, os, prompt, prompts_dir):
+def _(TERMS_ALL, llm, os, prompts_dir):
     _exclude = ['total', 'exxon', 'chevron']
     _co_dirs = [os.path.join(prompts_dir, d) for d in os.listdir(prompts_dir) if os.path.isdir(os.path.join(prompts_dir, d)) and d not in _exclude]
 
-    prompt.create_openai_jsonl(co_dirs=_co_dirs, save_path=os.path.join(TERMS_ALL.folder, 'prompts', 'prompts.jsonl'), overwrite=True, return_data=False)
+    llm.prompt.create_openai_jsonl(co_dirs=_co_dirs, save_path=os.path.join(TERMS_ALL.folder, 'prompts', 'prompts.jsonl'), overwrite=True, return_data=False)
     return
 
 
 @app.cell
-def _(companies):
-    len(list(companies.co_files(yield_level='Report')))
-    return
-
-
-@app.cell
-def _(pipeline):
-    jsonl_path = pipeline.stage_analyse()
+def _(llm):
+    jsonl_path = llm.pipeline.stage_analyse()
     jsonl_path
     return
 
 
 @app.cell
-def _():
-    import uuid
-    _report_paths = [
-        'data/companies/bp/annual-report/bp-annual-report-accounts-2007',
-        'data/companies/exxon/annual-report/exxon-annual-report-2010',
-        'data/companies/chevron/annual-report/chevron-annual-report-2015'
-    ]
-    _uuid1 = uuid.uuid5(uuid.NAMESPACE_OID, ''.join(_report_paths)).hex
-
-    print(_uuid1+'.jsonl')
-    #print(_report.report_name)
-    return
-
-
-@app.cell
-def _(os):
-    os.path.basename(os.path.dirname(os.path.dirname('data/companies/bp/annual-report/bp-annual-report-accounts-2007/all-terms/prompts/biofuel.txt')))
-    return
-
-
-@app.cell
-def _(TERMS_ALL, os, prompt, prompts_dir):
+def _(TERMS_ALL, llm, os, prompts_dir):
     #_exclude = ['total', 'exxon', 'chevron']
     #_co_dirs = [os.path.join(prompts_dir, d) for d in os.listdir(prompts_dir) if os.path.isdir(os.path.join(prompts_dir, d)) and d not in _exclude]
     _include = ['exxon']
     _co_dirs = [os.path.join(prompts_dir, d) for d in os.listdir(prompts_dir) if os.path.isdir(os.path.join(prompts_dir, d)) and d in _include]
 
-    test_jsonl = prompt.create_openai_jsonl(
+    test_jsonl = llm.prompt.create_openai_jsonl(
         co_dirs=_co_dirs, 
         save_path=os.path.join(TERMS_ALL.folder, 'prompts', 'exxon-test.jsonl'),
         model='gpt-4.1',
@@ -347,8 +293,8 @@ def _(test_jsonl, tiktoken):
 
 
 @app.cell
-def _(TERMS_ALL, os, prompt):
-    batch_id = prompt.submit_openai_batch(
+def _(TERMS_ALL, llm, os):
+    batch_id = llm.prompt.submit_openai_batch(
        jsonl_path=os.path.join(TERMS_ALL.folder, 'prompts', 'exxon-test.jsonl'),
        terms_dir=os.path.join(TERMS_ALL.folder)
     )
@@ -358,8 +304,8 @@ def _(TERMS_ALL, os, prompt):
 
 
 @app.cell
-def _(TERMS_ALL, batch_id, os, prompt):
-    prompt.check_batch_status(
+def _(TERMS_ALL, batch_id, llm, os):
+    llm.prompt.check_batch_status(
         batch_id, 
         dir_to_search=os.path.join(TERMS_ALL.folder)
     )
@@ -476,18 +422,7 @@ def _():
 
 
 @app.cell
-def _(
-    Term,
-    TermCollection,
-    companies,
-    inspection,
-    mat_map,
-    mo,
-    mpl,
-    pd,
-    re,
-    stg_map,
-):
+def _(Term, TermCollection, companies, llm, mat_map, mo, mpl, pd, re, stg_map):
     def mark_term_mentions(md: str, term: Term):
         matches = re.finditer(term.regex, md, re.I)
         prev_shift = 0
@@ -524,7 +459,7 @@ def _(
         stg_style = '; '.join(f"{k}: {v}" for k, v in stg_details["style"].items())
         snt = entry['sentiment']
 
-        chunks = inspection.search_results_chunks(companies.Report.from_metadata(co, rt, yr), terms, entry['term_alias'])
+        chunks = llm.inspection.search_results_chunks(companies.Report.from_metadata(co, rt, yr), terms, entry['term_alias'])
 
         notes = f"> {entry['notes']}"
         if entry['commitments']:
@@ -680,149 +615,8 @@ def _(
 
 
 @app.cell
-def _(companies, df_exxon_test):
-    _row = df_exxon_test[(df_exxon_test['year'] == '2007') & (df_exxon_test['term_alias'] == 'Biofuel') & (df_exxon_test['report_type'].str.contains('annual'))]
-    companies.Report.from_metadata(_row['company'].values[0], _row['report_type'].values[0], _row['year'].values[0]).dir
-    return
-
-
-@app.cell(hide_code=True)
-def _(mo):
-    mo.md(r"""
-    Notes:
-    - 'sentiment'
-        - Happy as is really. I guess the main crique is it's quite hard to critique - needs a more firm methodology.
-            - Examples in the prompt?
-        - What does it really mean? How positively or negatively the technology is discussed.
-    - 'stage'
-        - I still don't really have an intuition of how this is different from maturity. Maybe these two should be separated into 'how the company believes it is viewed by the industry', and 'how
-    - 'maturity'
-        - feel like this conceptually has too much overlap with 'stage'
-        - Should clarify if this is the maturity of the company's implementation, or the maturity of the company's
-
-    - 'commitments'
-        - field isn't made up of quotes - it's summaries from the text.
-        - doesn't seem to be future-looking commitments. sometimes its just extracts of certain statements of some maybe related thing.
-            - should separate out to 'key quotes' and 'future commitments'
-
-
-    ---
-    OLD:
-    ```python
-    class PromptResponse(BaseModel):
-        sentiment: float = Field(
-            description="Question 1: Sentiment towards the technology, on a scale from -1 (totally negative) to 1 (totally positive)",
-            ge=-1.0, le=1.0
-        )
-        commitments: list[str] = Field(
-            description="Question 2: Key extracts or quotes showing commitments towards the technology."
-        )
-        stage: Literal["commercial-deployment", "demonstration", "pilot", "research and development", "unclear"] = Field(
-            description="Question 3: Stage of implementation of the technology"
-        )
-        maturity: Literal["emerging", "established", "phasing-out", "unclear"] = Field(
-            description="Question 4: How mature the company considers the technology to be"
-        )
-        notes: str|None = Field(default=None,
-            description="Additional notes or caveats about the company's stance towards the term, or the quality of the extracts"
-        )
-    ```
-
-    And in the prompt:
-    ```python
-    1. "How positive or negative is the overall sentiment towards {term.prompt_alias}?"
-    2. "What key commitments has {co_alias} made to {term.prompt_alias}?"
-    3. "At what stage of implementation is {term.prompt_alias}?"
-    4. "How mature does {co_alias} consider {term.prompt_alias} to be?"
-    ```
-
-
-    ---
-    NEW:
-    ```python
-    class PromptResponse(BaseModel):
-        sentiment: float = Field(
-            description="Question 1: Sentiment towards the technology, on a scale from -1 (totally negative) to 1 (totally positive)",
-            ge=-1.0, le=1.0
-        )
-        quotes: list[str] = Field(
-            description="Question 2: Key quotes reflecting sentiment towards the technology."  # or should this be quotes reflecting maturity? or any of the other questions? or all?
-        )
-        commitments: list[str] = Field(
-            description="Question 3: Key extracts or quotes showing commitments towards the technology."
-        )
-        maturity: Literal["emerging", "established", "phasing-out", "unclear"] = Field(
-            description="Question 4: How mature the report frames the technology to be"
-        )
-        stage: Literal["commercial-deployment", "demonstration", "pilot", "research and development", "unclear"] = Field(
-            description="Question 5: Stage of implementation of the technology"
-        )
-        notes: str|None = Field(default=None,
-            description="Additional notes or caveats about the company's stance towards the term, or the quality of the extracts"
-        )
-    ```
-
-    And in the prompt:
-    ```python
-    1. "How positive or negative is the overall sentiment towards {term.prompt_alias}?"
-    2. "How mature is {term.prompt_alias} framed to be?"
-    3. "At what stage of commercialisation is {term.prompt_alias} within the {co_alias}'s operations?"
-    4. "What key commitments has {co_alias} made towards {term.prompt_alias}?"
-    ```
-    """)
-    return
-
-
-@app.cell
-def _():
-    from pydantic import Field, BaseModel
-    from typing import Literal
-    class PromptResponse(BaseModel):
-        # Question 1: "How positive or negative is the overall sentiment towards {term.prompt_alias}?"
-        sentiment: float = Field(
-            description="Question 1: Sentiment towards the technology, on a scale from -1 (totally negative) to 1 (totally positive)",
-            ge=-1.0, le=1.0
-        )
-        sentiment_quotes: list[tuple[str, str]] = Field(
-            description="Quotes reflecting sentiment towards the technology and a justification for their inclusion. Given as evidence for the sentiment score given in Question 1."  
-        )
-        sentiment_justification: str = Field(
-            description="Overall justification for the sentiment score given in Question 1."
-        )
-
-        # Question 2: "How mature is {term.prompt_alias} framed to be?"
-        maturity: Literal["unproven", "emerging", "established", "unclear"] = Field(
-            description="Question 2: How mature the report frames the technology to be"
-        )
-        maturity_quotes: list[tuple[str, str]] = Field(
-            description="Quotes reflecting how mature the report frames the technology to be and a justification for their inclusion. Given as evidence for the maturity listed in Question 2."
-        )
-        maturity_justification: str = Field(
-            description="Overall justification for the maturity listed in Question 2."
-        )
-
-        # Question 3: "What stage of commercialisation is {term.prompt_alias} at within the company's operations?"
-        stage: Literal["research and development", "pilot", "demonstration", "commercial-deployment", "phasing-out", "unclear"] = Field(
-            description="Question 3: The technology's stage of commercialisation within the company's operations."
-        )
-        stage_quotes: list[tuple[str, str]] = Field(
-            description="Quotes reflecting the technology's stage of commercialisation within the company's operations and a justification for their inclusion. Given as evidence for the stage of commercialisation listed in Question 3."
-        )
-        stage_justification: str = Field(
-            description="Overall justification for the stage of commercialisation listed in Question 3."
-        )
-
-        commitments: list[str] = Field(
-            description="Question 4: Key extracts or quotes showing commitments towards the technology."
-        )
-        commitments_quotes: list[tuple[str, str]] = Field(
-            description="Quotes reflecting commitments towards the technology and a justification for their inclusion. Given as evidence for the commitments listed in Question 4."  
-        )
-        commitments_justification: str = Field(
-            description="Overall justification for the commitments listed in Question 4."
-        )
-
-
+def _(df_exxon_test):
+    df_exxon_test
     return
 
 
@@ -830,18 +624,18 @@ def _():
 def _(TERMS_ALL, df_exxon_test, plt):
 
 
-    term_fnames_to_term = {term.prompt_fname.replace('.txt', ''): term for term in TERMS_ALL}
+    term_fnames_to_term = {term.prompt_fname: term for term in TERMS_ALL}
 
     _fig, _axs = plt.subplots(2,1, figsize=(12,10), sharey=True, sharex=True)
-    for _i, _rt in enumerate(df_exxon_test['report-type'].unique()):
-        for _tech in df_exxon_test['technology'].unique():
-            _df_tech = df_exxon_test[(df_exxon_test['report-type'] == _rt) & (df_exxon_test['technology'] == _tech)]
+    for _i, _rt in enumerate(df_exxon_test['report_type'].unique()):
+        for _tech in df_exxon_test['term_fname'].unique():
+            _df_tech = df_exxon_test[(df_exxon_test['report_type'] == _rt) & (df_exxon_test['term_fname'] == _tech)]
             _df_tech['year'] = _df_tech['year'].astype(int)
             _df_tech.sort_values('year', inplace=True)
             term = term_fnames_to_term[_tech]
             _axs[_i].plot(
                 _df_tech['year'], _df_tech['sentiment'], 
-                label=_tech, color = term.colour,
+                label=term, color = term.colour,
                 linestyle = term.dash_ls if term.dash else '-',
                 gapcolor = term.edgecolour,
                 marker = term.marker if term.marker else 'o', alpha = 0.7

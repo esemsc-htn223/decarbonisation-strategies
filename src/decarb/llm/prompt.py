@@ -1,6 +1,6 @@
 from dataclasses import dataclass
 import io
-from typing import Literal, Iterator, Union
+from typing import Literal, Iterator
 import os
 from dotenv import load_dotenv
 from openai import OpenAI
@@ -12,7 +12,7 @@ import uuid
 import tiktoken
 
 from decarb.companies import Company, COMPANY_ALIASES, Report, file_metadata
-from decarb.regex.terms import Term, TermCollection
+from decarb.terms import Term, TermCollection
 from decarb.util import OUT_DIR, REPORT_TYPES_LONG, logger_llm, TERMS_DIR
 
 DEFAULT_MODEL = 'gpt-5.1'
@@ -91,8 +91,7 @@ def construct_prompt(
         overwrite:bool = False
 ):
     '''
-    Construct a prompt to pass to the LLM, including task description, output format
-    and the relevant extracts.
+    Construct a prompt to pass to the LLM, including task description and the relevant extracts.
     
     Parameters
     ----------
@@ -134,22 +133,39 @@ def construct_prompt(
     
     prompt = f'''The following extracts have been taken from {co_alias}'s {year} {report_alias} and all relate to {term.prompt_alias}. 
 
-Use the contained information to answer the following questions:
-1. "How positive or negative is the overall sentiment towards {term.prompt_alias}?"
-2. "How mature is {term.prompt_alias} framed to be, in terms of Techonology Readiness Levels?"
-3. "At what stage of commercialisation is {term.prompt_alias} within {co_alias}?"
-4. "What commitments has {co_alias} made towards {term.prompt_alias}?"
+Use these extracts to answer the following questions. Base your answers only on the extracts, not on any other information you may 
+have about {co_alias}'s use of {term.prompt_alias} in {year}. Answers must be evidenced by direct quotes from the extracts, along
+with a justification of why each quote is relevant.
 
-Use the IEA's definitions for Technology Readiness Levels (TRLs), which are as follows:
-1. Initial idea reported: Basic principles have been defined
-2. Application formulated: Concept and application have been formulated
-3. Components tested: Critical functions proven experimentally without all components integrated
-4. Early prototype tested: First prototype successfully tested in non-representative conditions
-5. Large prototype tested: Integrated components proven in representative operational conditions
-6. Prototype operated in real conditions: Prototype proven at a representative scale and in conditions to be deployed
-7. Validated at pre-commercial scale: System demonstrated sufficiently to move to full-scale
-8. First-of-a-kind commercial scale commissioned: Commercial scale realised in real-world environment
-9. Technically ready for sale or licensing: Successfully operated and commercially available with technology guarantees. Ready for further learning-by-doing.
+# Questions:
+1. "How positive or negative is the overall sentiment towards {term.prompt_alias}? 
+Score on a scale from -1 (totally negative) to 1 (totally positive)."
+
+2. "How mature is {term.prompt_alias} framed to be in the text in terms of Technology Readiness Levels (TRL)? 
+Assign a TRL from 1-9 based on the following definitions:
+- TRL 1. Initial idea reported: Basic principles have been defined
+- TRL 2. Application formulated: Concept and application have been formulated
+- TRL 3. Components tested: Critical functions proven experimentally without all components integrated
+- TRL 4. Early prototype tested: First prototype successfully tested in non-representative conditions
+- TRL 5. Large prototype tested: Integrated components proven in representative operational conditions
+- TRL 6. Prototype operated in real conditions: Prototype proven at a representative scale and in conditions to be deployed
+- TRL 7. Validated at pre-commercial scale: System demonstrated sufficiently to move to full-scale
+- TRL 8. First-of-a-kind commercial scale commissioned: Commercial scale realised in real-world environment
+- TRL 9. Technically ready for sale or licensing: Successfully operated and commercially available with technology guarantees. Ready for further learning-by-doing.
+If insufficient information is available to assign a TRL, leave the answer null."
+
+3. "At what stage of commercialisation is {term.prompt_alias} within {co_alias}?
+Choose from: 
+- 'research and development'
+- 'pilot'
+- 'demonstration'
+- 'commercial-deployment'
+- 'phasing-out'
+- 'unclear'"
+
+4. "What commitments has {co_alias} made towards {term.prompt_alias}?
+Provide a list of commitments, flagging commitments that include specific measurable targets as verifiable."
+
 
 # Extracts:
 -----------
@@ -170,6 +186,62 @@ Use the IEA's definitions for Technology Readiness Levels (TRLs), which are as f
     
     return prompt
 
+class QuoteEvidence(BaseModel):
+    quote: str = Field(description="Direct quote from the source text")
+    justification: str = Field(description="Explanation of why this quote is relevant as evidence")
+
+class Commitment(BaseModel):
+    commitment: str = Field(description="A commitment made by the company towards the technology")
+    quote: str = Field(description="Direct quote from the source text evidencing the commitment")
+    justification: str = Field(description="Explanation of how the quote evidences the commitment")
+    verifiable: bool = Field(description="True if the commitment includes specific, measurable targets. False if the commitment is aspirational or qualitative only.")
+
+class PromptResponse(BaseModel):
+    # Question 1: "How positive or negative is the overall sentiment towards {term.prompt_alias}?"
+    q1_sentiment: float = Field(
+        description="Question 1: Sentiment towards the technology, on a scale from -1 (totally negative) to 1 (totally positive)",
+        ge=-1.0, le=1.0
+    )
+    q1_sentiment_quotes: list[QuoteEvidence] = Field(
+        description="Quotes reflecting sentiment towards the technology and a justification for their inclusion. Given as evidence for the sentiment score given in q1_sentiment."  
+    )
+
+    # Question 2: "How mature is {term.prompt_alias} framed to be, in terms of Techonology Readiness Levels?"
+    q2_maturity: int | None = Field(
+        default=None,
+        description="Question 2: The Technology Readiness Level (TRL) of the technology as framed in the extracts, 1-9. Definitions provided in the prompt. Null if insufficient information is available to assign a TRL.",
+        ge=1, le=9
+    )
+    q2_maturity_quotes: list[QuoteEvidence] = Field(
+        description="Quotes reflecting the Technology Readiness Level (TRL) of the technology and a justification for their inclusion. Given as evidence for the maturity given in q2_maturity."
+    )
+
+    # Question 3: "What stage of commercialisation is {term.prompt_alias} at within the company's operations?"
+    q3_stage: Literal["research and development", "pilot", "demonstration", "commercial-deployment", "phasing-out", "unclear"] = Field(
+        description="Question 3: The technology's stage of commercialisation within the company's operations."
+    )
+    q3_stage_quotes: list[QuoteEvidence] = Field(
+        description="Quotes reflecting the technology's stage of commercialisation within the company's operations and a justification for their inclusion. Given as evidence for the stage of commercialisation given in q3_stage."
+    )
+
+    # Question 4: "What commitments does the company make towards {term.prompt_alias}?"
+    q4_commitments: list[Commitment] = Field(
+        description="Question 4: Commitments made towards the technology."
+    )
+
+    # overall notes - to be deprecated after tests.
+    notes: str|None = Field(
+        default=None,
+        description="Only populate if there are any additional notes about the response that are not captured by the other fields. Leave null otherwise."
+    )
+
+class AnalysisRecord(BaseModel):
+    company: str
+    report_type: Literal["annual-report", "sustainability-report"]
+    year: int
+    term: str
+    response: PromptResponse
+
 def prompt_id(report:Report, term:str|Term) -> str:
     '''
     Create a unique ID for a prompt based on the company, report type, year, and term.
@@ -188,63 +260,13 @@ def prompt_id(report:Report, term:str|Term) -> str:
         The generated prompt ID, in the format "{company}_{report_type}_{year}_{term}", with all values in lowercase and spaces replaced by hyphens.
     '''
     if isinstance(term, str):
-        term_alias = term
+        term_fname = term
     elif isinstance(term, Term):
-        term_alias = term.prompt_fname.replace('.txt', '')
+        term_fname = term.prompt_fname.replace('.txt', '')
     else:
         raise ValueError(f"term should be either the name of a term (as a str), or a Term object. Got {type(term)}")
     
-    return f"{report.company.folder_name}_{report.report_type}_{report.year}_{term_alias}".lower().replace(' ', '-').replace('(', '').replace(')', '')
-
-
-class QuoteEvidence(BaseModel):
-    quote: str = Field(description="Direct quote from the source text")
-    justification: str = Field(description="Explanation of why this quote is relevant as evidence")
-
-class CommitmentWithEvidence(BaseModel):
-    commitment: str = Field(description="A specific commitment made by the company")
-    quote: str = Field(description="Direct quote from the source text evidencing this commitment")
-    justification: str = Field(description="Explanation of how the quote evidences the commitment")
-
-class PromptResponse(BaseModel):
-    # Question 1: "How positive or negative is the overall sentiment towards {term.prompt_alias}?"
-    q1_sentiment: float = Field(
-        description="Question 1: Sentiment towards the technology, on a scale from -1 (totally negative) to 1 (totally positive)",
-        ge=-1.0, le=1.0
-    )
-    q1_sentiment_quotes: list[QuoteEvidence] = Field(
-        description="Quotes reflecting sentiment towards the technology and a justification for their inclusion. Given as evidence for the sentiment score given in q1_sentiment."  
-    )
-
-    # Question 2: "How mature is {term.prompt_alias} framed to be, in terms of Techonology Readiness Levels?"
-    q2_maturity: int = Field(
-        description="Question 2: The Technology Readiness Level (TRL) of the technology, 1 to 9. Definitions provided in the prompt.",
-        ge=1, le=9
-    )
-
-    q2_maturity_quotes: list[QuoteEvidence] = Field(
-        description="Quotes reflecting the Technology Readiness Level (TRL) of the technology and a justification for their inclusion. Given as evidence for the maturity given in q2_maturity."
-    )
-
-    # Question 3: "What stage of commercialisation is {term.prompt_alias} at within the company's operations?"
-    q3_stage: Literal["research and development", "pilot", "demonstration", "commercial-deployment", "phasing-out", "unclear"] = Field(
-        description="Question 3: The technology's stage of commercialisation within the company's operations."
-    )
-    q3_stage_quotes: list[QuoteEvidence] = Field(
-        description="Quotes reflecting the technology's stage of commercialisation within the company's operations and a justification for their inclusion. Given as evidence for the stage of commercialisation given in q3_stage."
-    )
-
-    # Question 4: "What commitments does the company make towards {term.prompt_alias}?"
-    q4_commitments: list[CommitmentWithEvidence] = Field(
-        description="Question 4: Commitments made towards the technology."
-    )
-
-class AnalysisRecord(BaseModel):
-    company: str
-    report_type: Literal["annual-report", "sustainability-report"]
-    year: int
-    term: str
-    response: PromptResponse
+    return f"{report.company.folder_name}_{report.report_type}_{report.year}_{term_fname}".lower().replace(' ', '-').replace('(', '').replace(')', '')
 
 def make_strict_schema(schema: dict) -> dict:
     """Recursively patch a Pydantic JSON schema for OpenAI strict mode."""
@@ -367,9 +389,9 @@ def create_openai_jsonl(
 
     if save:
         if save_as is None:
-            term_coll = os.path.basename(os.path.dirname(os.path.dirname(prompt_paths[0])))  # use first prompt path for collection. if we have multiple later, we raise an error so we can assume this is correct.
+            term_coll = TermCollection.from_folder(os.path.dirname(os.path.dirname(prompt_paths[0])))  # use first prompt path for collection. if we have multiple later, we raise an error so we can assume this is correct.
             fname = uuid.uuid5(uuid.NAMESPACE_OID, ''.join(prompt_paths)).hex
-            save_as = os.path.join(TERMS_DIR, term_coll, 'prompts', f'{fname}.jsonl')
+            save_as = os.path.join(term_coll.prompts_folder, f'{fname}.jsonl')
         else:
             if not save_as.endswith('.jsonl'):
                 raise ValueError(f'save_as should be a path ending with .jsonl. Got {save_as}')
@@ -598,7 +620,7 @@ def submit_openai_batch(
             file=('jsonl_data.jsonl', jsonl_bytes, "application/json"),
             purpose="batch"
         )
-        logger_llm.debug(f'JSONL UPLOADED -> OpenAI: {os.path.basename(jsonl)} with ID {batch_file.id}. From list, with len: {len(jsonl)}')
+        logger_llm.debug(f'JSONL PORTION UPLOADED -> OpenAI: with ID {batch_file.id}. From list, with len: {len(jsonl)}')
     else:
         batch_file = client.files.create(
             file=open(jsonl, "rb"),

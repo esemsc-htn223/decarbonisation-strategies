@@ -1,12 +1,9 @@
 import os
 from concurrent.futures import ThreadPoolExecutor, ProcessPoolExecutor, as_completed
 import sys
-from dotenv import load_dotenv
-from openai import OpenAI
 from typing import Iterable, Any, Literal
 import json
 from tqdm import tqdm
-import time
 
 from .rag import search_chunks, pdf_to_md, chunk_md
 from .prompt import (
@@ -14,9 +11,9 @@ from .prompt import (
     submit_openai_batch, check_batch_status, retrieve_batch_results,
     DEFAULT_MODEL
 )
-from ..companies import Company, COS, CompanyCollection, co_files, file_metadata
-from ..util import REPORT_TYPES, DATA_DIR, TERMS_DIR, OUT_DIR, logger_llm, COMPANIES_DIR
-from ..regex.terms import Term, TermCollection, TERMS_ALL
+from decarb.companies import Company, COS, CompanyCollection, co_files, file_metadata
+from decarb.util import REPORT_TYPES, DATA_DIR, TERMS_DIR, OUT_DIR, logger_llm, COMPANIES_DIR
+from decarb.terms import Term, TermCollection, TERMS_ALL
 
 
 def stage_convert(cos: Company|CompanyCollection = COS, report_types: Iterable[str]|str = REPORT_TYPES,
@@ -118,7 +115,7 @@ def stage_search(terms: TermCollection=TERMS_ALL, *, overwrite: bool = False, pr
 
     total = sum([report.n_chunks for report in co_files(yield_level='Report')])
 
-    with tqdm(total=total, desc="Processing companies", disable=not progress_bar, bar_format='{desc}: {bar} {n}/{total}') as pbar:
+    with tqdm(total=total, desc="Processing report chunks", disable=not progress_bar, bar_format='{desc}: {bar} {n}/{total}') as pbar:
         for report in co_files(yield_level='Report'):
             if report.n_chunks == 0:
                 logger_llm.warning(f'NO CHUNKS FOUND for {report.report_name}. Skipping search. Full path: {report._chunks_dir}')
@@ -157,7 +154,7 @@ def stage_draft(terms: TermCollection=TERMS_ALL, *,
     with tqdm(total=sum(1 for _ in co_files(yield_level='chunk_folder'))*len(terms), desc="Drafting prompts", disable=not progress_bar, bar_format='{desc}: {bar} {n}/{total}') as pbar:
         for report in co_files(yield_level='Report'):
                     
-            if report.search_results_path is None:
+            if report.search_results_path(terms) is None:
                 logger_llm.warning(f'SEARCH RESULTS NOT FOUND for {report:full}. Skipping prompt construction.')
                 pbar.update(len(terms))
                 skip_counter += len(terms)
@@ -172,9 +169,9 @@ def stage_draft(terms: TermCollection=TERMS_ALL, *,
             if skip_counter > 10:
                 raise ValueError(f'More than 10 prompts skipped due to missing chunks or search results - try running stage_chunk and/or stage_search. Last missing report dir: {report.dir}')
 
-            logger_llm.debug(f'PROCESSING: {report.company} - {report.report_type} - {report.search_results_filepath}')
+            logger_llm.debug(f'PROCESSING: {report.company} - {report.report_type} - {report.search_results_path(terms)}')
             
-            search_results = json.load(open(report.search_results_filepath))
+            search_results = json.load(open(report.search_results_path(terms)))
             for term_alias, chunk_inds in search_results.items():
                 if chunk_inds is None or len(chunk_inds) == 0:
                     logger_llm.debug(f'NO CHUNKS for {term_alias} in {report:full}. Skipping prompt construction for this term.')
@@ -222,17 +219,19 @@ def stage_submit(model: str = DEFAULT_MODEL, *,
     # collect all prompt file paths. assuming all text files are to be analysed.
     file_paths = []
     for report in co_files(yield_level='Report', companies=companies):
-        if terms is not None:
-            term_folder_names = [term.alias for term in terms]
+        if isinstance(terms, TermCollection):
+            term_coll_folder_names = [terms.folder_name]
+        elif terms is None:
+            term_coll_folder_names = report.term_coll_folder_names()
         else:
-            term_folder_names = report.term_folder_names()
+            raise ValueError(f'Invalid terms argument: {terms}. Must be a TermCollection or None.')
 
-        for term_folder in term_folder_names:
-            if report.prompts_dir(term_folder) is None:
+        for term_coll_folder in term_coll_folder_names:
+            if report.prompts_dir(term_coll_folder) is None:
                 continue
-            for prompt_file in os.listdir(report.prompts_dir(term_folder)):
+            for prompt_file in os.listdir(report.prompts_dir(term_coll_folder)):
                 if prompt_file.endswith('.txt'):
-                    file_paths.append(report.prompt_path(term_folder, prompt_file))
+                    file_paths.append(report.prompt_path(term_coll_folder, prompt_file))
     logger_llm.info(f'COLLECTED PROMPTS: terms={terms} {len(file_paths)} prompt files found in .{len(list(co_files(yield_level="Report", companies=companies)))} reports.')
 
     # create jsonl for openai batch
@@ -246,9 +245,9 @@ def stage_submit(model: str = DEFAULT_MODEL, *,
 
 
     # submit portions of jsonl to openai
-    term_coll = os.path.basename(os.path.dirname(os.path.dirname(file_paths[0])))  # structure asserted in create_openai_jsonl
-    save_dir = os.path.join(TERMS_DIR, term_coll, 'batches')
-    info_path = os.path.join(TERMS_DIR, term_coll, 
+    terms_coll =  TermCollection.from_folder(os.path.dirname(os.path.dirname(file_paths[0])))  # structure asserted in create_openai_jsonl
+    save_dir = terms_coll.batches_folder
+    info_path = os.path.join(terms_coll.prompts_folder, 
                              'portions-info-' + os.path.basename(jsonl_path).replace('.jsonl', '.json'))
 
     portion_info = {}
@@ -270,7 +269,37 @@ def stage_submit(model: str = DEFAULT_MODEL, *,
     }
     with open(info_path, 'w') as f:
         json.dump(portion_info, f, indent=4)
-    
+
+def stage_gather_ids(status: str = '', *, companies: Company|CompanyCollection = None, terms: TermCollection|None = None):
+    '''
+    Gather the batch IDs of all submitted batches for the given companies and terms, and return them as a list.
+
+    Parameters
+    ----------
+    companies : Company, CompanyCollection or None
+        The company or companies to include in the analysis. If None, includes all companies for which prompts have been drafted. Defaults to None.
+    terms : TermCollection or None
+        The collection of terms to include in the analysis. If None, includes all terms for which prompts have been drafted. Defaults to None.
+    '''
+    batch_ids = []
+    for report in co_files(yield_level='Report', companies=companies):
+        if isinstance(terms, TermCollection):
+            term_coll_folder_names = [terms.folder_name]
+        elif terms is None:
+            term_coll_folder_names = report.term_coll_folder_names()
+        else: 
+            raise ValueError(f'Invalid terms argument: {terms}. Must be a TermCollection or None.')
+
+        for term_coll_folder in term_coll_folder_names:
+            info_path = os.path.join(report.prompts_dir(term_coll_folder), 'portions-info.json')
+            if not os.path.exists(info_path):
+                logger_llm.warning(f'Portions info file not found for {report:full} - {term_coll_folder}. Skipping.')
+                continue
+            with open(info_path, 'r') as f:
+                portion_info = json.load(f)
+                batch_ids.extend(list(portion_info['batches'].keys()))
+    return batch_ids
+
 def stage_retrieve(batch_ids: Iterable[str]|None = None, *, 
                    progress_bar: bool = True, verbose: bool = False):
     '''

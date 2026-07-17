@@ -4,8 +4,8 @@ import matplotlib as mpl
 import numpy as np
 from typing import Iterable
 
-from .regex.terms import TermCollection, TERMS_ALL
-from .companies import Company, COS, CompanyCollection
+from decarb.terms import TermCollection, TERMS_ALL
+from decarb.companies import COS, CompanyCollection
 
 def plot_mentions(
     df: pd.DataFrame, 
