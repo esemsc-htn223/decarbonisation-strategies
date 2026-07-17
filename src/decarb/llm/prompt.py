@@ -518,8 +518,8 @@ def jsonl_portions(
     current_portion = []
     current_token_count = 0
     
-    def save_portion(portion:list[dict], i:int):
-        if save:
+    def save_portion_if_requested(portion:list[dict], i:int, requested = save):
+        if requested:
             portion_fname = f'portion-{i}.jsonl'
             portion_path = os.path.join(save_dir, portion_fname)
             if os.path.exists(portion_path) and not overwrite:
@@ -542,7 +542,7 @@ def jsonl_portions(
                     start_index=start_index,
                     end_index=i-1
                 )
-                save_portion(current_portion, i)
+                save_portion_if_requested(current_portion, i, requested = save)
                 
                 # (re)set for next portion
                 current_token_count = 0
@@ -559,7 +559,7 @@ def jsonl_portions(
             start_index=start_index,
             end_index=i
         )
-        save_portion(current_portion, i+1)
+        save_portion_if_requested(current_portion, i+1, requested = save)
 
 
 def submit_openai_batch(
