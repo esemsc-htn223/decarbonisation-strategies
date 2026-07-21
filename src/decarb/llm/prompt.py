@@ -10,12 +10,26 @@ import json
 import time
 import uuid
 import tiktoken
+from tqdm import tqdm
 
 from decarb.companies import Company, COMPANY_ALIASES, Report, file_metadata
 from decarb.terms import Term, TermCollection
 from decarb.util import OUT_DIR, REPORT_TYPES_LONG, logger_llm, TERMS_DIR
 
 DEFAULT_MODEL = 'gpt-5.1'
+
+# waiting required
+STATUS_WORKING = ('validating', 'in_progress', 'finalizing')  # may still produce a result file
+STATUS_FAILING = ('cancelling',)  # will not produce a result file
+
+# no further waiting required
+STATUS_FAILED = ('failed', 'cancelled', 'expired')  # will not produce a result file
+STATUS_COMPLETED = ('completed',)  # result file available
+
+STATUS_TERMINAL = STATUS_FAILED + STATUS_FAILING  # statuses for which we will not get a result file
+STATUS_IN_QUEUE = STATUS_WORKING + STATUS_FAILING  # all statuses that consume enqueued limit
+STATUS_NOT_IN_QUEUE = STATUS_FAILED + STATUS_COMPLETED  # all statuses that do not consume enqueued limit
+
 
 def construct_extracts(
         report:Report, term:Term, *,
@@ -482,9 +496,12 @@ class JSONLPortion:
         return f'JSONLPortion(start_index={self.start_index}, end_index={self.end_index}, token_count={self.token_count}, portion_len={len(self.portion)})'
 
 def jsonl_portions(
-        jsonl_path:str, 
-        max_tokens:int = 3_000,
-        encoding_name:str = 'cl100k_base',
+        jsonl_path:str, *,
+        strategy:Literal['max_tokens', 'max_prompts', 'split_into_n'] = 'max_tokens',
+        max_tokens:int = 1_000_000,
+        max_prompts:int = 100,
+        split_into_n:int = 10,
+        encoding_name:str = 'o200k_base',
         save:bool = False, save_dir:str|None = None, overwrite:bool = False
 ) -> Iterator[JSONLPortion]:
     '''
@@ -495,10 +512,19 @@ def jsonl_portions(
     ----------
     jsonl_path : str
         The path to the jsonl file to portion.
+    strategy : Literal['max_tokens', 'max_prompts', 'split_into_n'], optional
+        The strategy to use for portioning the jsonl file. Defaults to 'max_tokens'.
     max_tokens : int, optional
-        The maximum number of tokens that each portion should contain. Defaults to 3,000.
+        The maximum number of tokens that each portion should contain. Defaults to 1,000,000.
+        Only has an effect if `strategy` is 'max_tokens'.
+    max_prompts : int, optional
+        The maximum number of prompts that each portion should contain. Defaults to 100.
+        Only has an effect if `strategy` is 'max_prompts'.
+    split_into_n : int, optional
+        The number of portions to split the jsonl file into. Defaults to 10.
+        Only has an effect if `strategy` is 'split_into_n'.
     encoding_name : str, optional
-        The name of the encoding to use for token counting. Defaults to 'cl100k_base'.
+        The name of the encoding to use for token counting. Defaults to 'o200k_base'.
     save : bool, optional
         Whether to save the portions to files. Defaults to False.
     save_dir : str or None, optional
@@ -507,6 +533,9 @@ def jsonl_portions(
     overwrite : bool, optional
         Whether to overwrite existing files. Defaults to False.
     '''
+    if strategy not in ['max_tokens', 'max_prompts', 'split_into_n']:
+        raise ValueError(f'strategy should be one of "max_tokens", "max_prompts", or "split_into_n". Got {strategy}')
+
     if save:
         if save_dir is None:
             base_dir = os.path.dirname(jsonl_path)
@@ -517,6 +546,8 @@ def jsonl_portions(
     encoding = tiktoken.get_encoding(encoding_name)
     current_portion = []
     current_token_count = 0
+    current_threshold_count = 0  # either prompts or tokens, depending on strategy
+    start_index = 0
     
     def save_portion_if_requested(portion:list[dict], i:int, requested = save):
         if requested:
@@ -530,40 +561,117 @@ def jsonl_portions(
                         f.write(json.dumps(record) + '\n')
                 logger_llm.debug(f'PORTION SAVED: {portion_fname} at {portion_path}')
 
-    start_index = 0
-    with open(jsonl_path, 'r') as f:
-        for i, line in enumerate(f):
-            prompt_json = json.loads(line)
-            token_count = len(encoding.encode(prompt_json.get('body', {}).get('messages', [{}])[0].get('content', '')))
-            if current_token_count + token_count > max_tokens and current_portion:
-                yield JSONLPortion(
-                    portion=current_portion,
-                    token_count=current_token_count,
-                    start_index=start_index,
-                    end_index=i-1
-                )
-                save_portion_if_requested(current_portion, i, requested = save)
+    if strategy == 'split_into_n':
+        # get length of jsonl file
+        with open(jsonl_path, 'r') as f:
+            total_lines = sum(1 for _ in f)
+            max_prompts = total_lines // split_into_n + (1 if total_lines % split_into_n > 0 else 0)
+
+            for i, line in enumerate(f):
+                prompt_json = json.loads(line)
+                current_portion.append(prompt_json)
+                if len(current_portion) >= max_prompts:
+                    yield JSONLPortion(
+                        portion=current_portion,
+                        token_count=sum(len(encoding.encode(p.get('body', {}).get('messages', [{}])[0].get('content', ''))) for p in current_portion),
+                        start_index=start_index,
+                        end_index=i
+                    )
+                    save_portion_if_requested(current_portion, i, requested = save)
+
+                    current_portion = []
+                    start_index = i + 1
+        # yield any remaining portion
+        if current_portion:
+            yield JSONLPortion(
+                portion=current_portion,
+                token_count=sum(len(encoding.encode(p.get('body', {}).get('messages', [{}])[0].get('content', ''))) for p in current_portion),
+                start_index=start_index,
+                end_index=i
+            )
+            save_portion_if_requested(current_portion, i+1, requested = save)
+    else:
+        with open(jsonl_path, 'r') as f:
+            for i, line in enumerate(f):
+                prompt_json = json.loads(line)
                 
-                # (re)set for next portion
-                current_token_count = 0
-                start_index = i
-                current_portion = []
-            current_portion.append(prompt_json)
-            current_token_count += token_count
+                token_count = len(encoding.encode(prompt_json.get('body', {}).get('messages', [{}])[0].get('content', '')))
 
-    # yield any remaining portion
-    if current_portion:
-        yield JSONLPortion(
-            portion=current_portion,
-            token_count=current_token_count,
-            start_index=start_index,
-            end_index=i
-        )
-        save_portion_if_requested(current_portion, i+1, requested = save)
+                if current_token_count + token_count > max_tokens and current_portion:
+                    yield JSONLPortion(
+                        portion=current_portion,
+                        token_count=current_token_count,
+                        start_index=start_index,
+                        end_index=i-1
+                    )
+                    save_portion_if_requested(current_portion, i, requested = save)
+                    
+                    # (re)set for next portion
+                    current_token_count = 0
+                    start_index = i
+                    current_portion = []
+                current_portion.append(prompt_json)
+                current_token_count += token_count
 
+        # yield any remaining portion
+        if current_portion:
+            yield JSONLPortion(
+                portion=current_portion,
+                token_count=current_token_count,
+                start_index=start_index,
+                end_index=i
+            )
+            save_portion_if_requested(current_portion, i+1, requested = save)
+
+def jsonl_stats(jsonl_path:str, *, encoding_name:str = 'o200k_base') -> dict:
+    '''
+    Get statistics about the given jsonl file, including the number of prompts and the total number of tokens.
+
+    Parameters
+    ----------
+    jsonl_path : str
+        The path to the jsonl file to get statistics for.
+    encoding_name : str, optional
+        The name of the encoding to use for token counting. Defaults to 'o200k_base'.
+
+    Returns
+    -------
+    dict
+        A dictionary containing the number of prompts and the total number of tokens in the jsonl file.
+    '''
+    encoding = tiktoken.get_encoding(encoding_name)
+    n_prompts = 0
+    n_tokens = 0
+    token_counts = []
+
+    with open(jsonl_path, 'r') as f:
+        for line in f:
+            prompt_json = json.loads(line)
+            n_prompts += 1
+            n_tokens += len(encoding.encode(prompt_json.get('body', {}).get('messages', [{}])[0].get('content', '')))
+            token_counts.append(len(encoding.encode(prompt_json.get('body', {}).get('messages', [{}])[0].get('content', ''))))
+
+    if token_counts:
+        return {
+            'n_prompts': n_prompts,
+            'n_tokens': n_tokens,
+            'min_tokens': min(token_counts),
+            'max_tokens': max(token_counts),
+            'mean_tokens': sum(token_counts) / len(token_counts),
+            'median_tokens': sorted(token_counts)[len(token_counts) // 2]
+        }
+    else:
+        return {
+            'n_prompts': n_prompts,
+            'n_tokens': n_tokens,
+            'min_tokens': 0,
+            'max_tokens': 0,
+            'mean_tokens': 0,
+            'median_tokens': 0
+        }
 
 def submit_openai_batch(
-        jsonl:str|list[dict], 
+        jsonl:str|list[dict], *,
         save_dir:str|None = None
 ) -> str:
     '''
@@ -645,15 +753,22 @@ def submit_openai_batch(
 
     return batch.id
 
-def check_batch_status(batch_id:str) -> dict:
+
+def check_batch_status(batch_id:str | None = None, *, on_miss: Literal['raise', 'print', 'pass', 'create'] = 'raise') -> dict:
     '''
-    Check the status of the requested batch, and update the saved batch details file.
+    Check the status of all batches, or the requested batch, and update the saved batch details file.
 
     Parameters
     ----------
-    batch_id : str
+    batch_id : str | None
         The ID of the batch to check (also the name of the batch json file), as returned by submit_openai_batch.
-
+    on_miss : Literal['raise', 'print', 'pass', 'create'], optional
+        What to do if the batch details file is not found.
+        - `'raise'`: raise a FileNotFoundError (default)
+        - `'print'`: print a warning message and continue
+        - `'pass'`: silently continue
+        - `'create'`: create a new batch details file with the current batch status
+        
     Returns
     -------
     dict
@@ -662,32 +777,56 @@ def check_batch_status(batch_id:str) -> dict:
     load_dotenv()
     client = OpenAI()
 
-    batch = client.batches.retrieve(batch_id)
-    logger_llm.debug(f'BATCH STATUS CHECKED: {batch.id} - status={batch.status}, completed={batch.request_counts.completed}/{batch.request_counts.total}, created at {batch.created_at}, updated at {time.time()}')
+    def update_batch_file(batch):
+        batch_file_path = None
+        for root, dirs, files in os.walk(TERMS_DIR):
+            for file in files:
+                if file == f'{batch.id}.json':
+                    batch_file_path = os.path.join(root, file)
+                    break
+            if batch_file_path:
+                break
+        
+        if batch_file_path:
+            with open(batch_file_path, 'w') as f:
+                f.write(json.dumps(batch.model_dump(), indent=4))
+            logger_llm.debug(f'BATCH DETAILS UPDATED: {batch.id} at {batch_file_path}')
+        else:
+            logger_llm.warning(f'BATCH DETAILS FILE NOT FOUND: {batch.id}.json in directory {TERMS_DIR}. on_miss={on_miss}')
+            if on_miss == 'raise':
+                raise FileNotFoundError(f'Searched for batch file "{batch.id}.json" in directory {TERMS_DIR}, but found no match.')
+            elif on_miss == 'print':
+                print(f'Searched for batch file "{batch.id}.json" in directory {TERMS_DIR}, but found no match.')
+            elif on_miss == 'pass':
+                pass
+            elif on_miss == 'create':
+                batch_file_path = os.path.join(TERMS_DIR, 'unknown', 'batches', f'{batch.id}.json')
+                os.makedirs(os.path.dirname(batch_file_path), exist_ok=True)
+                with open(batch_file_path, 'w') as f:
+                    f.write(json.dumps(batch.model_dump(), indent=4))
+                logger_llm.debug(f'BATCH DETAILS CREATED: {batch.id} at {batch_file_path}')
+
+    if batch_id is None:
+        # Check status of all batches
+        batches = client.batches.list()
+        for batch in batches:
+            logger_llm.debug(f'BATCH STATUS CHECKED: {batch.id} - status={batch.status}, completed={batch.request_counts.completed}/{batch.request_counts.total}, created at {batch.created_at}, updated at {time.time()}')
+            update_batch_file(batch)
+        return [batch.model_dump() for batch in batches]
+    else:
+        batch = client.batches.retrieve(batch_id)
+        logger_llm.debug(f'BATCH STATUS CHECKED: {batch.id} - status={batch.status}, completed={batch.request_counts.completed}/{batch.request_counts.total}, created at {batch.created_at}, updated at {time.time()}')
     
     # find batch details file and update it
-    batch_file_path = None
-
-    for root, dirs, files in os.walk(TERMS_DIR):
-        for file in files:
-            if file == f'{batch_id}.json':
-                batch_file_path = os.path.join(root, file)
-                break
-        if batch_file_path:
-            break
-    
-    if batch_file_path:
-        with open(batch_file_path, 'w') as f:
-            f.write(json.dumps(batch.model_dump(), indent=4))
-        logger_llm.debug(f'BATCH DETAILS UPDATED: {batch.id} at {batch_file_path}')
-    else:
-        raise FileNotFoundError(f'Searched for batch file "{batch_id}.json" in directory {TERMS_DIR}, but found no match.')
+    update_batch_file(batch)
     
     return batch.model_dump()
     
 def retrieve_batch_results(batch_id:str, *, 
-                       if_incomplete:Literal['error', 'ignore'] = 'error',
-                       save:bool = True, save_as:str = None) -> list[dict]|None:
+                       if_incomplete:Literal['error', 'ignore', 'wait'] = 'error',
+                       if_failed:Literal['error', 'ignore'] = 'error',
+                       save:bool = True, save_as:str = None,
+                       wait_interval: int = 120) -> list[dict]|None:
     '''
     Retrieve the results of the requested batch.
 
@@ -695,8 +834,21 @@ def retrieve_batch_results(batch_id:str, *,
     ----------
     batch_id : str
         The ID of the batch to retrieve results for, as returned by submit_openai_batch.
-    if_incomplete : Literal['error', 'ignore']
-        What to do if the batch is not completed yet. If 'error', a ValueError will be raised. If 'ignore', the function will return None and log a warning.
+    if_incomplete : Literal['error', 'ignore', 'wait'] = 'error'
+        What to do if the batch is not completed yet. 
+        - `'error'`: a ValueError will be raised. 
+        - `'ignore'`: the function will return None and log a warning. 
+        - `'wait'`: wait for the batch to complete before retrieving results. May take a long time (e.g. up to an hour)
+    if_failed : Literal['error', 'ignore'] = 'error'
+        What to do if the batch has failed.
+        - `'error'`: a ValueError will be raised.
+        - `'ignore'`: the function will return None and log a warning.
+    save : bool, optional
+        Whether to save the retrieved results as a json file in the report's term directory (or at the path specified by `save_as` if provided). Defaults to True.
+    save_as : str or None, optional
+        The filepath to a jsonl file to save the retrieved results to. If None (the default), the results will be saved in the report's term directory. Only has an effect if `save` is True.
+    wait_interval : int, optional
+        The number of seconds to wait between checks for batch completion if `if_incomplete` is set to 'wait'. Defaults to 120 seconds (2 minutes).
 
     Returns
     -------
@@ -705,24 +857,46 @@ def retrieve_batch_results(batch_id:str, *,
     '''
     load_dotenv()
     client = OpenAI()
-
+    
     batch = client.batches.retrieve(batch_id)
     
-    if batch.status != 'completed':
+    if batch.status in STATUS_IN_QUEUE:  # i.e., still working, cancelling, finalizing, etc (requires waiting before next batch can start)
         if if_incomplete == 'error':
             raise ValueError(f'Batch {batch_id} is not yet complete. Current status: {batch.status}')
         elif if_incomplete == 'ignore':
-            logger_llm.warning(f'Batch {batch_id} is not completed yet. Current status: {batch.status}. Returning None.')
+            logger_llm.warning(f'ATTEMPTED RETRIEVAL OF INCOMPLETE BATCH {batch_id}. Current status: {batch.status}. Returning None.')
             return None
+        elif if_incomplete == 'wait':
+            logger_llm.info(f'WAITING FOR BATCH {batch_id} TO COMPLETE.')
+            with tqdm(total = None, desc=f'Waiting for batch {batch_id} to complete', unit='check') as pbar:
+                while batch.status in STATUS_IN_QUEUE:
+                    time.sleep(wait_interval)
+                    batch = client.batches.retrieve(batch_id)
+                    if batch.status in STATUS_FAILED:
+                        logger_llm.error(f'ENDING WAIT - BATCH FAILED: Batch {batch_id} has status {batch.status}.')
+                        if if_failed == 'error':
+                            raise ValueError(f'Batch {batch_id} has failed. Current status: {batch.status}')
+                        else:
+                            return None
+                    logger_llm.info(f'BATCH {batch_id} STATUS: {batch.status}. Waiting {wait_interval} seconds before checking again.')
+                    pbar.update(1)
+                    pbar.set_postfix({'status': batch.status, 'completed': f'{batch.request_counts.completed}/{batch.request_counts.total}', 'failed': f'{batch.request_counts.failed}/{batch.request_counts.total}'})
         else:
-            raise ValueError(f'Invalid value for if_incomplete: {if_incomplete}. Must be "error" or "ignore".')
+            raise ValueError(f'Invalid value for if_incomplete: {if_incomplete}. Must be "error", "ignore", or "wait".')
+    elif batch.status in STATUS_FAILED:
+        logger_llm.error(f'BATCH {batch_id} FAILED: status={batch.status}, completed={batch.request_counts.completed}/{batch.request_counts.total}, failed={batch.request_counts.failed}/{batch.request_counts.total}')
+        if if_failed == 'error':
+            raise ValueError(f'Batch {batch_id} has failed. Current status: {batch.status}')
+        else:
+            return None
+
+    out_file = client.files.content(batch.output_file_id)
     
-    file = client.files.retrieve(batch.output_file_id)
-    results = [json.loads(line) for line in file.read().splitlines()]
-    
-    logger_llm.debug(f'BATCH RESULTS RETRIEVED: {batch.id} - {len(results)} results retrieved.')
+    logger_llm.debug(f'BATCH RESULTS RETRIEVED: {batch.id} - {sum(1 for _ in out_file.iter_lines())} results retrieved.')
 
     if save:
+        # batch details always saved (no option to not), so we can use this to produce the output file path
+        batch_file_path = None
         for root, dirs, files in os.walk(TERMS_DIR):
             for file in files:
                 if file == f'{batch_id}.json':
@@ -731,10 +905,9 @@ def retrieve_batch_results(batch_id:str, *,
             if batch_file_path:
                 break
         term_coll = os.path.basename(os.path.dirname(os.path.dirname(batch_file_path)))
-        save_path = save_as or os.path.join(OUT_DIR, term_coll, 'batch-results', f'{batch_id}.json')
+        save_path = save_as or os.path.join(OUT_DIR, term_coll, 'batch-results', f'{batch_id}.jsonl')
         os.makedirs(os.path.dirname(save_path), exist_ok=True)
-        with open(save_path, 'w') as f:
-            json.dump(results, f, indent=4)
+        out_file.write_to_file(save_path)
         logger_llm.debug(f'BATCH RESULTS SAVED: {batch.id} at {save_path}')
 
-    return results
+    return [json.loads(line) for line in out_file.iter_lines()]
