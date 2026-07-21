@@ -25,7 +25,7 @@ def _():
     from decarb.companies import Company, CompanyCollection, COS
     from decarb.llm import rag, inspection, pipeline
 
-    return COS, TERMS_ALL, inspection, mo, os, pipeline, plt, rag
+    return COS, TERMS_ALL, inspection, mo, os, pd, pipeline, plt, rag
 
 
 @app.cell(hide_code=True)
@@ -61,33 +61,53 @@ def _(pipeline):
 
 
 @app.cell
-def _():
-    import json
-
-    with open('/Users/hugoneely/Downloads/batch_6a5a23ec80f8819081fc92c27ea2c2ed_output.jsonl', 'r') as f:
-        jsonl = f.read()
-
-    jsonl = jsonl.splitlines()
-    jsonl = [json.loads(line) for line in jsonl]
-    jsonl
-    return json, jsonl
-
-
-@app.cell
-def _(json, jsonl):
-    json.loads(jsonl[0]['response']['body']['choices'][0]['message']['content'])
-    return
-
-
-@app.cell
 def _(COS, pipeline):
-    pipeline.stage_submit(overwrite=True, companies = COS['exxon'])
+    pipeline.stage_submit(
+        overwrite=True, 
+        portion_strategy='max_tokens', max_tokens = 750_000, 
+        progress_bar=False,
+        companies = COS['shell']
+    )
     return
 
 
 @app.cell
 def _(pipeline):
     pipeline.stage_retrieve(progress_bar=True, verbose=True)
+    return
+
+
+@app.cell(hide_code=True)
+def _(mo):
+    mo.md(r"""
+    ## Prompt functionality
+    """)
+    return
+
+
+@app.cell
+def _(pd):
+    from decarb.llm import prompt
+
+    jsonl_path = '/Users/hugoneely/Documents/4-work/1-current/PhD/repos/decarbonisation-strategies/data/terms/all-terms/prompts/da751a76a582531ca537f181f2acdab5.jsonl'
+
+    df = { 'portion_index': [], 'n_prompts': [], 'token_count': [], 'start_index': [], 'end_index': [] }
+
+    for i, portion in enumerate(prompt.jsonl_portions(jsonl_path)):
+        df['portion_index'].append(i)
+        df['n_prompts'].append(len(portion))
+        df['token_count'].append(portion.token_count)
+        df['start_index'].append(portion.start_index)
+        df['end_index'].append(portion.end_index)
+
+    df = pd.DataFrame(df)
+    df
+    return jsonl_path, prompt
+
+
+@app.cell
+def _(jsonl_path, prompt):
+    prompt.jsonl_stats(jsonl_path)
     return
 
 
