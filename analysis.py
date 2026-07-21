@@ -1,6 +1,6 @@
 import marimo
 
-__generated_with = "0.23.9"
+__generated_with = "0.23.14"
 app = marimo.App()
 
 
@@ -293,37 +293,64 @@ def _(test_jsonl, tiktoken):
 
 
 @app.cell
-def _(TERMS_ALL, llm, os):
-    batch_id = llm.prompt.submit_openai_batch(
-       jsonl_path=os.path.join(TERMS_ALL.folder, 'prompts', 'exxon-test.jsonl'),
-       terms_dir=os.path.join(TERMS_ALL.folder)
-    )
+def _():
+    #batch_id = llm.prompt.submit_openai_batch(
+    #   jsonl_path=os.path.join(TERMS_ALL.folder, 'prompts', 'exxon-test.jsonl'),
+    #   terms_dir=os.path.join(TERMS_ALL.folder)
+    #)
     #batch_id = 'batch_6a185de3bdc48190b5f1a02b6d20de32'
+    batch_id = 'batch_6a5a23e976b08190bee4aacb275d3e83'
     batch_id
     return (batch_id,)
 
 
 @app.cell
-def _(TERMS_ALL, batch_id, llm, os):
-    llm.prompt.check_batch_status(
-        batch_id, 
-        dir_to_search=os.path.join(TERMS_ALL.folder)
+def _(batch_id, llm):
+    batch_status = llm.prompt.check_batch_status(
+        batch_id
     )
+    batch_status
+    return (batch_status,)
+
+
+@app.cell
+def _(json, line):
+    json.loads(line)['response']['body']['choices'][1]['message']['content']
     return
 
 
 @app.cell
-def _(json, load_dotenv, mo):
+def _(batch_status, json, load_dotenv, mo):
     from openai import OpenAI
 
     load_dotenv()
     client = OpenAI()
 
-    for line in client.files.content('file-V2nb8HDBHYMuDvoFZwrR1A').iter_lines():
-        _acc = mo.accordion(json.loads(line))
-        break
+    responses = []
+    full_responses = []
+    for line in client.files.content(batch_status['output_file_id']).iter_lines():
+        full_response = json.loads(line)
+        full_responses.append(full_response)
+        response = json.loads(json.loads(line)['response']['body']['choices'][0]['message']['content'])
+        responses.append(response)
 
-    _acc
+    mo.vstack([
+        mo.accordion(resp) for resp in responses
+    ])
+    return client, full_responses, line
+
+
+@app.cell
+def _(full_responses):
+    full_responses
+    return
+
+
+@app.cell
+def _(batch_status, client, json):
+    file = client.files.content(batch_status['output_file_id'])
+    [json.loads(line) for line in file.iter_lines()]
+    #.write_to_file('test_dir/test.jsonl')
     return
 
 
