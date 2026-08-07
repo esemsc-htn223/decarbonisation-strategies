@@ -389,39 +389,24 @@ def stage_retrieve(batch_ids: Iterable[str]|None = None, *,
         Whether to print detailed information about the batch retrieval process. Defaults to False.
         If progress_bar is True, printing is limited to avoid cluttering the progress bar output.
     '''
-    if batch_ids is None:
-        # Retrieve all batch IDs from the portions info file
-        batch_ids = []
-        for root, dirs, files in os.walk(TERMS_DIR):
-            for file in files:
-                if file.startswith('portions-info-') and file.endswith('.json'):
-                    with open(os.path.join(root, file), 'r') as f:
-                        info = json.load(f)
-                        batch_ids.extend(list(info['batches'].keys()))
-        if len(batch_ids) == 0:
-            # try the batches folder
-            for root, dirs, files in os.walk(TERMS_DIR):
-                for dir in dirs:
-                    if dir == 'batches':
-                        for batch_file in os.listdir(os.path.join(root, dir)):
-                            if batch_file.endswith('.json'):
-                                batch_ids.append(batch_file.replace('.json', ''))
+    # check all batch results, adding files where needed
+    batch_infos = check_batch_status(batch_id = None, on_miss='create')
 
     n_working = 0
     n_stopped = 0
     n_stopping = 0
     n_completed = 0
 
-    for batch_id in tqdm(batch_ids, disable = not progress_bar):
+    for batch_info in tqdm(batch_infos, disable = not progress_bar, bar_format='{desc}: {bar} {n}/{total}', desc='retrieving batch statuses'):
+        batch_id = batch_info['id']
         while True:
-            batch_info = check_batch_status(batch_id)
             status = batch_info.get('status')
             logger_llm.info(f'BATCH CHECKED {batch_id}: {status}. ')
             if status in STATUS_COMPLETED:
                 n_completed += 1
                 if not progress_bar and verbose:
                     print(f'batch completed - {batch_id} - status={status}. retrieving results.')
-                retrieve_batch_results(batch_id, save=True)
+                retrieve_batch_results(batch_id, save=True, if_incomplete='error', if_failed='ignore', if_output_missing='ignore')
                 break
             elif status in STATUS_WORKING:
                 n_working += 1
@@ -442,5 +427,5 @@ def stage_retrieve(batch_ids: Iterable[str]|None = None, *,
                 break
     
     if verbose:
-        print(f'retrieval complete. {n_completed} completed, {n_working} working, {n_stopped} stopped, {n_stopping} stopping / {len(batch_ids)} total.')
+        print(f'retrieval complete. {n_completed} completed, {n_working} working, {n_stopped} stopped, {n_stopping} stopping / {len(batch_infos)} total.')
 
