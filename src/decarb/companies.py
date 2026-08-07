@@ -17,6 +17,13 @@ COMPANY_ALIASES = {
         'total': 'TotalEnergies'
     }
 
+COMPANY_COLOURS = {
+    'shell': '#FCD116',
+    'bp': "#3ABE5B",
+    'exxon': '#FF0000',
+    'chevron': "#9BDAFF",
+    'total': "#E69AFF"
+}
 
 class Report:
     '''A report, identified by the path to its directory, or to a file within it. Provides properties to access the paths of each associated file, and whether the file exists.'''
@@ -324,6 +331,7 @@ class Report:
 class Company:
     folder_name: str
     full_name: str
+    colour: str|None = None
 
     report_types = set(REPORT_TYPES)
 
@@ -466,7 +474,7 @@ class CompanyCollection:
         '''
         
         if isinstance(companies, dict):
-            companies = [Company(folder_name=folder_name, full_name=full_name) for folder_name, full_name in companies.items()]
+            companies = [Company(folder_name=folder_name, full_name=full_name, colour=COMPANY_COLOURS.get(folder_name, None)) for folder_name, full_name in companies.items()]
         self.companies = list(companies)
         self.folder = COMPANIES_DIR
 
@@ -478,13 +486,16 @@ class CompanyCollection:
     def __iter__(self):
         return iter(self.companies)
     
-    def __getitem__(self, key):
-        if isinstance(key, str):
-            key = key.lower()
-            for co in self.companies:
-                if co.folder_name == key or co.full_name.lower() == key:
-                    return co
-            raise KeyError(f'Company with folder_name or full_name "{key}" not found in collection.')
+    def __getitem__(self, key) -> Union[Company, 'CompanyCollection']:
+        if isinstance(key, slice):
+            return CompanyCollection(self.companies[key])
+        elif isinstance(key, str):
+            try:
+                return next(co for co in self.companies if co.folder_name == key or co.full_name.lower() == key)
+            except StopIteration:
+                raise KeyError(f'Company with folder_name or full_name "{key}" not found in collection.')
+        elif isinstance(key, Iterable):
+            return CompanyCollection([self[ki] for ki in key])
         elif isinstance(key, int):
             return self.companies[key]
         else:            
