@@ -3,7 +3,7 @@ import io
 from typing import Literal, Iterator
 import os
 from dotenv import load_dotenv
-from openai import OpenAI
+from openai import OpenAI, NotFoundError
 from pydantic import BaseModel, Field
 import instructor
 import json
@@ -404,7 +404,8 @@ def create_openai_jsonl(
     if save:
         if save_as is None:
             term_coll = TermCollection.from_folder(os.path.dirname(os.path.dirname(prompt_paths[0])))  # use first prompt path for collection. if we have multiple later, we raise an error so we can assume this is correct.
-            fname = uuid.uuid5(uuid.NAMESPACE_OID, ''.join(prompt_paths)).hex
+            # make a unique filename based on the prompt contents
+            fname = uuid.uuid5(uuid.NAMESPACE_OID, ''.join([open(p, 'r').read() for p in prompt_paths])).hex
             save_as = os.path.join(term_coll.prompts_folder, f'{fname}.jsonl')
         else:
             if not save_as.endswith('.jsonl'):
@@ -479,8 +480,11 @@ def create_openai_jsonl(
     else:
         return None
 
+#class Job:
+
 @dataclass
 class JSONLPortion:
+    # portion control is essential for a healthy diet.
     portion: list[dict]
     token_count: int
     start_index: int
@@ -754,7 +758,9 @@ def submit_openai_batch(
     return batch.id
 
 
-def check_batch_status(batch_id:str | None = None, *, on_miss: Literal['raise', 'print', 'pass', 'create'] = 'raise') -> dict:
+def check_batch_status(batch_id:str | None = None, *, 
+                       on_miss: Literal['raise', 'print', 'pass', 'create'] = 'raise',
+                       progress_bar: bool = True) -> dict:
     '''
     Check the status of all batches, or the requested batch, and update the saved batch details file.
 
@@ -825,6 +831,7 @@ def check_batch_status(batch_id:str | None = None, *, on_miss: Literal['raise', 
 def retrieve_batch_results(batch_id:str, *, 
                        if_incomplete:Literal['error', 'ignore', 'wait'] = 'error',
                        if_failed:Literal['error', 'ignore'] = 'error',
+                       if_output_missing:Literal['error', 'ignore'] = 'error',
                        save:bool = True, save_as:str = None,
                        wait_interval: int = 120) -> list[dict]|None:
     '''
@@ -841,6 +848,10 @@ def retrieve_batch_results(batch_id:str, *,
         - `'wait'`: wait for the batch to complete before retrieving results. May take a long time (e.g. up to an hour)
     if_failed : Literal['error', 'ignore'] = 'error'
         What to do if the batch has failed.
+        - `'error'`: a ValueError will be raised.
+        - `'ignore'`: the function will return None and log a warning.
+    if_output_missing : Literal['error', 'ignore'] = 'error'
+        What to do if the output file for the batch is missing.
         - `'error'`: a ValueError will be raised.
         - `'ignore'`: the function will return None and log a warning.
     save : bool, optional
@@ -890,8 +901,21 @@ def retrieve_batch_results(batch_id:str, *,
         else:
             return None
 
-    out_file = client.files.content(batch.output_file_id)
+    if batch.output_file_id is None:
+        logger_llm.error(f'BATCH {batch_id} RESULTS RETRIEVAL FAILED: Batch has no output file ID. Current status: {batch.status}.')
+        if if_output_missing == 'error':
+            raise ValueError(f'Batch {batch_id} has no output file ID. Current status: {batch.status}.')
+        else:
+            return None
     
+    try:
+        out_file = client.files.content(batch.output_file_id)
+    except NotFoundError as e:
+        logger_llm.error(f'BATCH {batch_id} RESULTS RETRIEVAL FAILED: Could not retrieve output file {batch.output_file_id}. Current status: {batch.status}. Error: {e}')
+        if if_output_missing == 'error':
+            raise ValueError(f'Output file for batch {batch_id} is missing. Current status: {batch.status}. Error: {e}')
+        else:
+            return None
     logger_llm.debug(f'BATCH RESULTS RETRIEVED: {batch.id} - {sum(1 for _ in out_file.iter_lines())} results retrieved.')
 
     if save:
