@@ -72,7 +72,7 @@ def _(TERMS_ALL, TermCollection, companies, json, np, pd):
     default_missing = {
         'q1_sentiment': np.nan,
         'q1_sentiment_quotes': [],
-        'q2_maturity': -1,
+        'q2_maturity': np.nan,
         'q2_maturity_quotes': [],
         'q3_stage': pd.NA,
         'q3_stage_quotes': [],
@@ -444,14 +444,52 @@ def _(
                 ])
         return mo.accordion(quotes_acc)
 
+    def _entry_styles(entry: pd.Series) -> tuple:
+        '''Look up the maturity/stage display details and inline styles for an entry.'''
+        mat_details = mat_map.get(entry['q2_maturity'], {'alias': str(entry['q2_maturity']), 'style': {}})
+        stg = entry['q3_stage']
+        stg_details = stg_map.get(stg, {'alias': stg.title() if isinstance(stg, str) else str(stg), 'style': {}})
+        style = lambda details: '; '.join(f"{k}: {v}" for k, v in details["style"].items())
+        return mat_details, style(mat_details), stg_details, style(stg_details)
+
+    def term_year_key(entry: pd.Series) -> str:
+        '''
+        Build the accordion label for a single term-year entry.
+
+        Depends only on `entry`, so it can be computed eagerly for every year while the
+        matching body (which reads chunk files) stays behind a lazy loader.
+        '''
+        yr = entry['year']
+        if not entry['report_type_published']:
+            return f'<span style="color: lightcoral">**{yr}:** Report type "{entry["report_type"]}" not published</span>'
+
+        mat_details, mat_style, stg_details, stg_style = _entry_styles(entry)
+        snt = entry['q1_sentiment']
+
+        # handle missing / non-numeric sentiment
+        if pd.isna(snt):
+            snt_display = "Unclear"
+            snt_colour = "#cccccc"
+        else:
+            snt_display = snt
+            try:
+                snt_cmap = mpl.colormaps['RdYlGn'].resampled(21)
+                snt_colour = mpl.colors.to_hex(snt_cmap((float(snt) + 1) / 2))
+            except (TypeError, ValueError):
+                snt_colour = "#cccccc"
+
+        key = f'**{yr}:** {snt_display}<span style="color: {snt_colour}">█</span> \t|\t <span style="{stg_style}">{stg_details["alias"]}</span> \t|\t <span style="{mat_style}">{mat_details["alias"]}</span>'
+        n_commitments = len(entry['q4_commitments'])
+        if n_commitments > 0:
+            key += f' \t|\t {n_commitments} commitment{"s" if n_commitments != 1 else ""}'
+        return key
+
     def term_year_analysis(entry: pd.Series, terms: TermCollection, *, return_key: bool = False, lazy_chunks: bool = True) -> mo.Html:
 
         if not entry['report_type_published']:
             out = mo.md(f"> Report type '{entry['report_type']}' not published in {entry['year']}")
             if return_key:
-                #key = f'**{yr}:** {snt}<span style="color: {snt_colour}">█</span> \t|\t <span style="{stg_style}">{stg_details["alias"]}</span> \t|\t <span style="{mat_style}">{mat_details["alias"]}</span>'
-                key = f'<span style="color: lightcoral">**{entry["year"]}:** Report type "{entry["report_type"]}" not published</span>'
-                out = (key, out)
+                out = (term_year_key(entry), out)
             return out
 
         co = entry['company_alias']
@@ -459,18 +497,22 @@ def _(
         yr = entry['year']
         term = terms[entry['term_alias']]
 
-        mat = entry['q2_maturity']
-        mat_details = mat_map.get(mat, {'alias': str(mat), 'style': {}})
-        mat_style = '; '.join(f"{k}: {v}" for k, v in mat_details["style"].items())
-        stg = entry['q3_stage']
-        stg_details = stg_map.get(stg, {'alias': stg.title() if isinstance(stg, str) else str(stg), 'style': {}})
-        stg_style = '; '.join(f"{k}: {v}" for k, v in stg_details["style"].items())
+        mat_details, mat_style, stg_details, stg_style = _entry_styles(entry)
         snt = entry['q1_sentiment']
 
         if not entry['report_type_published']:
             chunks = [f"Report type '{rt}' not published in {yr}"]
         else:
-            chunks = llm.inspection.search_results_chunks(companies.Report.from_metadata(co, rt, yr), terms, entry['term_alias'])
+            # This is the only file I/O in the pipeline, and it runs lazily (only when a
+            # year is expanded). Guard it so a missing search-result or chunks directory
+            # renders a message rather than leaving the lazy loader spinning forever.
+            try:
+                chunks = llm.inspection.search_results_chunks(companies.Report.from_metadata(co, rt, yr), terms, entry['term_alias'])
+            except (FileNotFoundError, KeyError, ValueError) as e:
+                out = mo.md(f'> <span style="color: lightcoral">Chunks unavailable for {co} {rt} {yr} / {entry["term_alias"]}: {e}</span>')
+                if return_key:
+                    out = (term_year_key(entry), out)
+                return out
 
         if pd.notna(entry['notes']):
             notes = f"> {entry['notes']}"
@@ -511,25 +553,10 @@ def _(
                     }, lazy = lazy_chunks),
                 ])
         if return_key:
-            # handle missing / non-numeric sentiment
-            if pd.isna(snt):
-                snt_display = "Unclear"
-                snt_colour = "#cccccc"
-            else:
-                snt_display = snt
-                try:
-                    snt_val = float(snt)
-                    snt_cmap = mpl.colormaps['RdYlGn'].resampled(21)
-                    snt_colour = mpl.colors.to_hex(snt_cmap((snt_val + 1) / 2))
-                except Exception:
-                    snt_colour = "#cccccc"
-            key = f'**{yr}:** {snt}<span style="color: {snt_colour}">█</span> \t|\t <span style="{stg_style}">{stg_details["alias"]}</span> \t|\t <span style="{mat_style}">{mat_details["alias"]}</span>'
-            if n_commitments > 0:
-                key += f' \t|\t {n_commitments} commitment{"s" if n_commitments != 1 else ""}'
-            out = (key, out)
+            out = (term_year_key(entry), out)
         return out
 
-    return (term_year_analysis,)
+    return term_year_analysis, term_year_key
 
 
 @app.cell
@@ -660,15 +687,27 @@ def _(Literal, Term, alt, pd):
 
 
 @app.cell
+def _(df_test):
+    df_test
+    return
+
+
+@app.cell
+def _(df_test):
+    df_test[(df_test['company'] == 'exxon') & (df_test['term_alias'] == 'Nuclear fusion') & (df_test['report_type'] == 'annual-report')]['prompt'].isna().all()
+    return
+
+
+@app.cell
 def _(
     TERMS_ALL,
     TermCollection,
     companies,
-    df_test,
     mo,
     pd,
     plot_timeseries,
     term_year_analysis,
+    term_year_key,
     util,
 ):
     def company_report_results(df: pd.DataFrame, company_fname: str, terms: TermCollection, report_type: str, lazy: bool = True) -> mo.Html:
@@ -703,46 +742,62 @@ def _(
         for term in terms:
             df_term = df[(df['report_type'] == report_type) & (df['term_alias'] == term.alias) & (df['company'] == company_fname)]
 
-            if df_term.empty:
+            if df_term['prompt'].isna().all():
                 term_tabs[f'<span style="color: lightcoral">{term}</span>'] = mo.vstack([
                     mo.ui.text_area(value = term.regex, full_width = True, label = '**Regex:**'),
                     mo.md(f'> <span style="color: lightcoral"> Term "{term}" not found in {company_alias}\'s {rt_long.lower()}s.</span>'),
                 ])
                 continue
 
-            year_accordion = {}
-            for year in df_term['year'].unique():
-                entry = df_term[df_term['year'] == year].iloc[0]
-                key, value = term_year_analysis(entry, TERMS_ALL, return_key=True)
-                year_accordion[key] = value
+            # A plain callable: mo.ui.tabs(lazy=True) wraps each value in mo.lazy exactly
+            # once. Wrapping it here as well gives mo.lazy(mo.lazy(...)), which never loads.
+            def make_term_panel(term=term, df_term=df_term):
+                # Keys are built eagerly (cheap, no file I/O); the bodies are plain
+                # callables so mo.accordion(lazy=True) defers the chunk reads until a
+                # year is expanded.
+                year_accordion = {
+                    term_year_key(entry): (lambda entry=entry: term_year_analysis(entry, terms, return_key=False))
+                    for entry in (df_term[df_term['year'] == year].iloc[0] for year in df_term['year'].unique()) if entry['term_regex_found']
+                }
 
-            term_tabs[term.alias] = mo.vstack([
-                mo.ui.text_area(value = term.regex, full_width = True, label = '**Regex:**', rows = 2, disabled = True),
-                #mo.ui.altair_chart(plot_timeseries(df, company=company_fname, term=term, report_type=report_type), chart_selection = False, legend_selection = False),
-                mo.hstack([
-                    plot_timeseries(df_test, 'q1_sentiment', company=company_fname, term=term, report_type=report_type, width_px=550, height_px=250),
-                    plot_timeseries(df_test, 'q2_maturity', company=company_fname, term=term, report_type=report_type, width_px=550, height_px=250)
-                ], gap = 0, widths = 'equal', align = 'center'),
-                mo.accordion(year_accordion)
-            ]),
+                return mo.vstack([
+                    mo.ui.text_area(value = term.regex, full_width = True, label = '**Regex:**'),
+                    mo.hstack([
+                        plot_timeseries(df_term, 'q1_sentiment', company=company_fname, term=term, report_type=report_type, width_px=550, height_px=250),
+                        plot_timeseries(df_term, 'q2_maturity', company=company_fname, term=term, report_type=report_type, width_px=550, height_px=250)
+                    ], gap = 0, widths = 'equal', align = 'center'),
+                    mo.accordion(year_accordion, lazy = lazy)
+                ])
+
+            term_tabs[term.alias] = make_term_panel
 
         return mo.ui.tabs(term_tabs, label = 'Term', lazy = lazy)
 
 
-    def results_tabs(df: pd.DataFrame, terms: TermCollection = TERMS_ALL) -> mo.Html:
-        co_tabs = {}
-        for co in df['company'].unique():
-            # tab for each company
-            co_alias = companies.COMPANY_ALIASES.get(co, co)
-            rt_tabs = {}
-            for report_type in df['report_type'].unique():
-                rt_long = util.REPORT_TYPES_LONG.get(report_type, report_type).title()
+    def results_tabs(df: pd.DataFrame, terms: TermCollection = TERMS_ALL, lazy: bool = True) -> mo.Html:
+        '''
+        Company -> report type -> term -> year drill-down over the analysis results.
 
-                # get term-year analysis for each term, and put in tabs
-                rt_tabs[rt_long] = company_report_results(df, company_fname=co, terms=terms, report_type=report_type, lazy = False)
-            co_tabs[co_alias] = mo.ui.tabs(rt_tabs, label = 'Report Type')
+        Every level is lazy, so a cell only ever renders the branch that is currently
+        open. Building the whole tree eagerly exceeds marimo's `output_max_bytes`.
+        '''
+        def make_company_tabs(co, terms=terms, lazy=lazy):
+            # Each value is a plain callable, wrapped in mo.lazy once by lazy=True.
+            rt_tabs = {
+                util.REPORT_TYPES_LONG.get(report_type, report_type).title():
+                    (lambda co=co, rt=report_type: company_report_results(
+                        df, company_fname=co, terms=terms, report_type=rt, lazy=lazy
+                    ))
+                for report_type in df['report_type'].unique()
+            }
+            return mo.ui.tabs(rt_tabs, label = 'Report Type', lazy = lazy)
 
-        return mo.ui.tabs(co_tabs, label = 'Company')
+        co_tabs = {
+            companies.COMPANY_ALIASES.get(co, co): (lambda co=co: make_company_tabs(co))
+            for co in df['company'].unique()
+        }
+
+        return mo.ui.tabs(co_tabs, label = 'Company', lazy = lazy)
 
     return (results_tabs,)
 
