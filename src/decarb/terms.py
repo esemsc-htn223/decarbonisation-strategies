@@ -37,6 +37,25 @@ class Term:
      def __hash__(self):
           return hash(self.alias)
      
+     def __eq__(self, other):
+          if isinstance(other, Term):
+               return (self.alias == other.alias and 
+                       self.regex == other.regex)
+          return False
+     
+     def __ne__(self, other):
+          return not self.__eq__(other)
+     
+     def style_eq(self, other):
+          if isinstance(other, Term):
+               return (self.colour == other.colour and 
+                       self.prompt_alias == other.prompt_alias and
+                       self.dash == other.dash and
+                       self.marker == other.marker and
+                       self.hatch == other.hatch and
+                       self.edgecolour == other.edgecolour)
+          return False
+     
      def set_collection(self, collection: 'TermCollection'):
           if hasattr(self, 'collection'):
                raise ValueError(f'Term {self.alias} is already part of a collection. Cannot set collection again.')
@@ -55,6 +74,8 @@ class TermCollection:
                term.set_collection(self)
 
           self.terms = list(terms)
+          self.aliases = [term.alias for term in self.terms]
+          self.regexes = [term.regex for term in self.terms]
           self.folder_name = folder_name.replace(' ', '-').lower()
 
           self.folder = os.path.join(TERMS_DIR, self.folder_name)
@@ -122,6 +143,15 @@ class TermCollection:
                
                
           raise KeyError(f'Term with alias, prompt_fname {key} not found')
+     
+     def __contains__(self, key: str|int|Term):
+          if isinstance(key, Term):
+               return key in self.terms
+          try:
+               self.__getitem__(key)
+               return True
+          except KeyError:
+               return False
     
      def __len__(self):
            return len(self.terms)
