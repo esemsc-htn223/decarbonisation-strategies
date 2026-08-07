@@ -1,6 +1,6 @@
 import marimo
 
-__generated_with = "0.23.9"
+__generated_with = "0.23.16"
 app = marimo.App()
 
 
@@ -23,9 +23,9 @@ def _():
 
     from decarb.terms import TERMS_ALL, TERMS_SUMMARY, TERMS_SIMPLE
     from decarb.companies import Company, CompanyCollection, COS
-    from decarb.llm import rag, inspection, pipeline
+    from decarb.llm import rag, inspection, pipeline, prompt
 
-    return COS, TERMS_ALL, inspection, mo, os, pd, pipeline, plt, rag
+    return TERMS_ALL, inspection, mo, os, pd, pipeline, plt, prompt, rag
 
 
 @app.cell(hide_code=True)
@@ -61,12 +61,11 @@ def _(pipeline):
 
 
 @app.cell
-def _(COS, pipeline):
+def _(pipeline):
     pipeline.stage_submit(
         overwrite=True, 
         portion_strategy='max_tokens', max_tokens = 750_000, 
-        progress_bar=False,
-        companies = COS['shell']
+        progress_bar=False
     )
     return
 
@@ -86,8 +85,7 @@ def _(mo):
 
 
 @app.cell
-def _(pd):
-    from decarb.llm import prompt
+def _(pd, prompt):
 
     jsonl_path = '/Users/hugoneely/Documents/4-work/1-current/PhD/repos/decarbonisation-strategies/data/terms/all-terms/prompts/da751a76a582531ca537f181f2acdab5.jsonl'
 
@@ -102,7 +100,7 @@ def _(pd):
 
     df = pd.DataFrame(df)
     df
-    return jsonl_path, prompt
+    return (jsonl_path,)
 
 
 @app.cell
