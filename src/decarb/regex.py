@@ -7,7 +7,6 @@ import pymupdf
 
 from decarb.terms import TermCollection, TERMS_ALL
 from decarb.companies import CompanyCollection
-from decarb.plotting import plot_comparison
 from decarb.util import REPORT_TYPES_SHORT
 
 pymupdf.TOOLS.mupdf_display_errors(on = False)
@@ -91,14 +90,13 @@ def search_files(
     return out.sort_index()
 
 
-def regex_pipeline(terms: TermCollection, cos: CompanyCollection, *, 
-                 count_type: str = 'all', norm_type: str = 'words',
-                 reprocess: bool = False, save_csv: bool = True,
-                 plot: bool = False, save_plots: bool = True,
-                 plot_rank_zero_fill: str = 'nan', plot_rank_lines: bool = True,
-                 plot_n: bool = True, plot_normed_by: str|None = 'words'):
+def regex_pipeline(
+        terms: TermCollection, cos: CompanyCollection, *, 
+        count_type: str = 'all', norm_type: str = 'words',
+        overwrite: bool = False, save: bool = True
+    ):
         
-        terms.log(f'REGEX PIPELINE START: terms={terms.folder_name}, {save_csv=}, {plot=}, {save_plots=}')
+        terms.log(f'REGEX PIPELINE START: terms={terms.folder_name}, {save=}')
 
         out = {}
 
@@ -117,43 +115,20 @@ def regex_pipeline(terms: TermCollection, cos: CompanyCollection, *,
                 out_fname_normed = os.path.join(terms.folder, 'mentions', f'{co.folder_name}-{REPORT_TYPES_SHORT[report_type]}.csv')
                 out_fname_unnormed = os.path.join(terms.folder, 'mentions-unnormed', f'{co.folder_name}-{REPORT_TYPES_SHORT[report_type]}.csv')
 
-                if reprocess or not os.path.exists(out_fname_normed):
+                if overwrite or not os.path.exists(out_fname_normed):
                     dfs[f'{co.folder_name}-{REPORT_TYPES_SHORT[report_type]}'] = search_files(reports_folder, terms.terms, norm=True, norm_type=norm_type, count_type=count_type, year_index=True)
-                    if save_csv:
+                    if save:
                         dfs[f'{co.folder_name}-{REPORT_TYPES_SHORT[report_type]}'].to_csv(out_fname_normed)
                 else:
                     dfs[f'{co.folder_name}-{REPORT_TYPES_SHORT[report_type]}'] = pd.read_csv(out_fname_normed, index_col=0)
 
-                if reprocess or not os.path.exists(out_fname_unnormed):
+                if overwrite or not os.path.exists(out_fname_unnormed):
                     dfs_unnormed[f'{co.folder_name}-{REPORT_TYPES_SHORT[report_type]}'] = search_files(reports_folder, terms.terms, norm=False, norm_type=None, count_type=count_type, year_index=True)
-                    if save_csv:
+                    if save:
                         dfs_unnormed[f'{co.folder_name}-{REPORT_TYPES_SHORT[report_type]}'].to_csv(out_fname_unnormed)
                 else:
                     dfs_unnormed[f'{co.folder_name}-{REPORT_TYPES_SHORT[report_type]}'] = pd.read_csv(out_fname_unnormed, index_col=0)
 
         out['dfs'] = dfs
         out['dfs_unnormed'] = dfs_unnormed
-        if plot:
-            if not os.path.exists(os.path.join(terms.folder, 'plots')):
-                os.makedirs(os.path.join(terms.folder, 'plots'))
-
-            plot_n = norm_type if plot_n else None
-            fig_m, _ = plot_comparison(dfs, terms, cos=cos, plot_n=plot_n, normed_by=plot_normed_by, 
-                                     suptitle=f'Mentions of Technologies (Normalised by No. {norm_type.capitalize()})')
-            if save_plots:
-                fig_m.savefig(os.path.join(terms.folder, 'plots', 'mentions.png'), bbox_inches='tight', dpi = 300)
-            out['fig_mentions'] = fig_m
-
-            fig_um, _ = plot_comparison(dfs_unnormed, terms, cos=cos, plot_n=plot_n, normed_by=None, 
-                                     suptitle='Mentions of Technologies')
-            if save_plots:
-                fig_um.savefig(os.path.join(terms.folder, 'plots', 'mentions_unnormed.png'), bbox_inches='tight', dpi = 300)
-            out['fig_mentions_unnormed'] = fig_um
-
-            fig_r, _ = plot_comparison(dfs_unnormed, terms, cos=cos, rank=True, rank_zero_fill=plot_rank_zero_fill, rank_lines=plot_rank_lines, 
-                                     suptitle='Rankings of Mention Frequency')
-            if save_plots:
-                fig_r.savefig(os.path.join(terms.folder, 'plots', 'rankings.png'), bbox_inches='tight', dpi = 300)
-            out['fig_rankings'] = fig_r
-
         return out
