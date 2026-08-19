@@ -19,7 +19,7 @@ from decarb.util import REPORT_TYPES_LONG
 from decarb.terms import (
     Term, TermCollection, TERMS_ALL
 )
-from decarb.output.plot import llm_plot_timeseries
+from decarb.output.plot import llm_timeseries
 
 COLOUR_STG = '#8AC4FF'
 COLOUR_MAT = '#E5B8FF'
@@ -502,8 +502,8 @@ def company_report_results(df: pd.DataFrame, company_fname: str, terms: TermColl
             return mo.vstack([
                 mo.ui.text_area(value = term.regex, full_width = True, label = '**Regex:**'),
                 mo.hstack([
-                    llm_plot_timeseries(df_term, 'q1_sentiment', company=company_fname, term=term, report_type=report_type, width_px=550, height_px=250),
-                    llm_plot_timeseries(df_term, 'q2_maturity', company=company_fname, term=term, report_type=report_type, width_px=550, height_px=250)
+                    llm_timeseries(df_term, 'q1_sentiment', company=company_fname, term=term, report_type=report_type, width_px=550, height_px=250),
+                    llm_timeseries(df_term, 'q2_maturity', company=company_fname, term=term, report_type=report_type, width_px=550, height_px=250)
                 ], gap = 0, widths = 'equal', align = 'center'),
                 mo.accordion(year_accordion, lazy = lazy)
             ])
