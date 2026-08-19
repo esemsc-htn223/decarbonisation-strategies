@@ -11,173 +11,234 @@ from decarb.util import TERMS_DIR, logger
 
 @dataclass
 class Term:
-     alias: str
-     regex: str
-     colour: str
-     prompt_alias: str|None = None
+    alias: str  
+    regex: str
+    colour: str
+    prompt_alias: str|None = None
 
-     #linestyle: str|None = None
-     dash: bool = False
-     marker: str|None = None
-     hatch: str|None = None
-     edgecolour: str|None = None
-     dash_ls = (0, (5, 10)) # custom dashed linestyle for terms with dash=True
+    #linestyle: str|None = None
+    dash: bool = False
+    marker: str|None = None
+    hatch: str|None = None
+    edgecolour: str|None = None
+    dash_ls = (0, (5, 10)) # custom dashed linestyle for terms with dash=True
 
-     def __post_init__(self):
-          if self.prompt_alias is None:
-               self.prompt_alias = self.alias
-          self.prompt_fname = self.alias.lower().replace(' ', '-').replace('(', '').replace(')', '') + '.txt'
+    def __post_init__(self):
+        if self.prompt_alias is None:
+            self.prompt_alias = self.alias
+        self.prompt_fname = self.alias.lower().replace(' ', '-').replace('(', '').replace(')', '') + '.txt'
      
-     def __str__(self):
-          return self.alias
+    def __str__(self):
+        return self.alias
      
-     def __repr__(self):
-          return f'Term(alias={self.alias}, regex={self.regex}, colour={self.colour}, prompt_alias={self.prompt_alias})'
+    def __repr__(self):
+        return f'Term(alias={self.alias}, regex={self.regex}, colour={self.colour}, prompt_alias={self.prompt_alias})'
      
-     def __hash__(self):
-          return hash(self.alias)
+    def __hash__(self):
+        return hash(self.alias)
      
-     def __eq__(self, other):
-          if isinstance(other, Term):
-               return (self.alias == other.alias and 
-                       self.regex == other.regex)
-          return False
+    def __eq__(self, other):
+        if isinstance(other, Term):
+            return (self.alias == other.alias and 
+                    self.regex == other.regex)
+        return False
      
-     def __ne__(self, other):
-          return not self.__eq__(other)
+    def __ne__(self, other):
+        return not self.__eq__(other)
      
-     def style_eq(self, other):
-          if isinstance(other, Term):
-               return (self.colour == other.colour and 
-                       self.prompt_alias == other.prompt_alias and
-                       self.dash == other.dash and
-                       self.marker == other.marker and
-                       self.hatch == other.hatch and
-                       self.edgecolour == other.edgecolour)
-          return False
+    def style_eq(self, other):
+        if isinstance(other, Term):
+            return (self.colour == other.colour and 
+                    self.prompt_alias == other.prompt_alias and
+                    self.dash == other.dash and
+                    self.marker == other.marker and
+                    self.hatch == other.hatch and
+                    self.edgecolour == other.edgecolour)
+        return False
+
+    def copy(self):
+        return Term(
+            alias=self.alias,
+            regex=self.regex,
+            colour=self.colour,
+            prompt_alias=self.prompt_alias,
+            dash=self.dash,
+            marker=self.marker,
+            hatch=self.hatch,
+            edgecolour=self.edgecolour
+        )
      
-     def set_collection(self, collection: 'TermCollection'):
-          if hasattr(self, 'collection'):
-               raise ValueError(f'Term {self.alias} is already part of a collection. Cannot set collection again.')
-          self.collection = collection
+    def set_collection(self, collection: 'TermCollection'):
+        if hasattr(self, 'collection'):
+            raise AttributeError(f'Term {self.alias} is already part of a collection. Cannot set collection again.')
+        self.collection = collection
     
-    
+
 class TermCollection:
-     def __init__(self, terms: Iterable[Term], folder_name: str):
+    def __init__(self, terms: Iterable[Term], folder_name: str):
 
-          # check that all aliases are unique
-          aliases = [term.alias for term in terms]
-          if len(aliases) != len(set(aliases)):
-               raise ValueError('All term aliases must be unique')
+        # check that all aliases are unique
+        aliases = [term.alias for term in terms]
+        if len(aliases) != len(set(aliases)):
+            raise ValueError('All term aliases must be unique')
 
-          for term in terms:
-               term.set_collection(self)
+        for term in terms:
+            try:
+                term.set_collection(self)
+            except AttributeError:
+                term.copy().set_collection(self)
 
-          self.terms = list(terms)
-          self.aliases = [term.alias for term in self.terms]
-          self.regexes = [term.regex for term in self.terms]
-          self.folder_name = folder_name.replace(' ', '-').lower()
+        self.terms = list(terms)
+        self.aliases = [term.alias for term in self.terms]
+        self.regexes = [term.regex for term in self.terms]
+        self.folder_name = folder_name.replace(' ', '-').lower()
 
-          self.folder = os.path.join(TERMS_DIR, self.folder_name)
-          self.json_path = os.path.join(self.folder, 'terms.json')
-          self.batches_folder = os.path.join(self.folder, 'batches')
-          self.prompts_folder = os.path.join(self.folder, 'prompts')
+        self.folder = os.path.join(TERMS_DIR, self.folder_name)
+        self.json_path = os.path.join(self.folder, 'terms.json')
+        self.batches_folder = os.path.join(self.folder, 'batches')
+        self.prompts_folder = os.path.join(self.folder, 'prompts')
 
-          # set up folder structure
-          if not os.path.exists(self.folder):
-               os.makedirs(self.folder)
-          if not os.path.exists(self.json_path):
-               with open(self.json_path, 'w') as f:
-                    json.dump([{
-                         'alias': term.alias, 
-                         'prompt_fname': term.prompt_fname, 
-                         'regex': term.regex, 
-                         'colour': term.colour, 
-                         'prompt_alias': term.prompt_alias} for term in self.terms], f, indent=4)
-          if not os.path.exists(self.batches_folder):
-               os.makedirs(self.batches_folder)
-          if not os.path.exists(self.prompts_folder):
-               os.makedirs(self.prompts_folder)
+        # set up folder structure
+        if not os.path.exists(self.folder):
+            os.makedirs(self.folder)
+        if not os.path.exists(self.json_path):
+            with open(self.json_path, 'w') as f:
+                json.dump([{
+                    'alias': term.alias, 
+                    'prompt_fname': term.prompt_fname, 
+                    'regex': term.regex, 
+                    'colour': term.colour, 
+                    'prompt_alias': term.prompt_alias} for term in self.terms], f, indent=4)
+        if not os.path.exists(self.batches_folder):
+            os.makedirs(self.batches_folder)
+        if not os.path.exists(self.prompts_folder):
+            os.makedirs(self.prompts_folder)
 
-          self.uuid = 'terms-' + uuid.uuid5(uuid.NAMESPACE_OID, ''.join([term.alias + term.regex for term in self.terms])).hex
+        self.uuid = 'terms-' + uuid.uuid5(uuid.NAMESPACE_OID, ''.join([term.alias + term.regex for term in self.terms])).hex
 
-          logger.debug(f'CREATED TermCollection: folder_name={self.folder_name}, uuid={self.uuid}, terms={[term.alias for term in self.terms]}')
+        logger.debug(f'CREATED TermCollection: folder_name={self.folder_name}, uuid={self.uuid}, terms={[term.alias for term in self.terms]}')
 
-     @classmethod
-     def from_folder(cls, folder_name: str):
-          if os.sep in folder_name:
-               fname = os.path.basename(folder_name)
-          else:
-               fname = folder_name.replace(' ', '-').lower()
-          json_path = os.path.join(TERMS_DIR, fname, 'terms.json')
-          if not os.path.exists(json_path):
-               raise ValueError(f'TermCollection with folder name {fname} does not exist')
-          with open(json_path, 'r') as f:
-               terms_data = json.load(f)
-          terms = [Term(alias=term_data['alias'], regex=term_data['regex'], colour=term_data['colour'], prompt_alias=term_data.get('prompt_alias')) for term_data in terms_data]
-          return cls(terms, fname)
+    @classmethod
+    def from_folder(cls, folder_name: str):
+        if os.sep in folder_name:
+            fname = os.path.basename(folder_name)
+        else:
+            fname = folder_name.replace(' ', '-').lower()
+        json_path = os.path.join(TERMS_DIR, fname, 'terms.json')
+        if not os.path.exists(json_path):
+            raise ValueError(f'TermCollection with folder name {fname} does not exist')
+        with open(json_path, 'r') as f:
+            terms_data = json.load(f)
+        terms = [Term(alias=term_data['alias'], regex=term_data['regex'], colour=term_data['colour'], prompt_alias=term_data.get('prompt_alias')) for term_data in terms_data]
+        return cls(terms, fname)
 
-     def __iter__(self):
-          return iter(self.terms)
+    def __iter__(self):
+        return iter(self.terms)
     
-     def __getitem__(self, key: str|int):
-          '''Index by alias, lowecase index, regex, or, prompt_fname. Priority in that order '''
-          if isinstance(key, int):
-               return self.terms[key]
-          for term in self.terms:
-               # alias indexing
-               if term.alias == key:
-                   return term
-               if term.alias.lower() == key.lower():
-                  return term
+    def __getitem__(self, key: str|int):
+        '''Index by alias, lowecase index, regex, or, prompt_fname. Priority in that order '''
+
+        def check_term(term: Term, key: str):
+            # alias indexing
+            if term.alias == key:
+                return True
+            if term.alias.lower() == key.lower():
+                return True
                
-               # regex
-               if term.regex == key:
-                    return term
+            # regex
+            if term.regex == key:
+                return True
                
-               # prompt fname indexing
-               if term.prompt_fname == key:
-                    return term
-               if term.prompt_fname.replace('.txt', '') == key:
-                    return term
-               
-               
-          raise KeyError(f'Term with alias, prompt_fname {key} not found')
+            # prompt fname indexing
+            if term.prompt_fname == key:
+                return True
+            if term.prompt_fname.replace('.txt', '') == key:
+                return True
+
+            return False
+
+        if isinstance(key, int):
+            return self.terms[key]
+        elif isinstance(key, slice):
+            return TermSubCollection(self.terms[key], self)
+        elif isinstance(key, str):
+            try:
+                return next(term for term in self.terms if check_term(term, key))
+            except StopIteration:
+                raise KeyError(f'Term with alias, prompt_fname {key} not found')
+        elif isinstance(key, Term):
+            if key in self.terms:
+                return key
+            else:
+                raise KeyError(f'Term {key.alias} not found in collection')
+        elif isinstance(key, Iterable):
+            return TermSubCollection([self[k] for k in key], self)
+        else:
+            raise TypeError(f'Invalid key type: {type(key)}. Must be str, int, slice, Term, or Iterable of those types.')
      
-     def __contains__(self, key: str|int|Term):
-          if isinstance(key, Term):
-               return key in self.terms
-          try:
-               self.__getitem__(key)
-               return True
-          except KeyError:
-               return False
+    def __contains__(self, key: str|int|Term):
+        if isinstance(key, Term):
+            return key in self.terms
+        try:
+            self.__getitem__(key)
+            return True
+        except KeyError:
+            return False
     
-     def __len__(self):
-           return len(self.terms)
+    def __len__(self):
+        return len(self.terms)
 
-     def __repr__(self):
-          return f'TermCollection(folder_name={self.folder_name}, terms={[term.alias for term in self.terms]})'
+    def __repr__(self):
+        return f'TermCollection(folder_name={self.folder_name}, terms={[term.alias for term in self.terms]})'
      
-     def __str__(self):
-          return self.folder_name
+    def __str__(self):
+        return self.folder_name
 
-     def plot_colours(self):
-          _fig, (_ax1, _ax2) = plt.subplots(nrows=2, figsize = (5, 6))
-          for term in self.terms:
-               _ax1.plot([], [], label=' ', color=term.colour, linestyle=term.dash_ls if term.dash else None, marker = None, gapcolor=term.edgecolour)
-               _ax1.scatter([], [], color=term.colour, marker = term.marker, hatch=term.hatch, edgecolor=term.edgecolour, label=' ')
-          _ax1.legend(loc='center', ncols=len(self.terms), frameon=False, markerscale=1)
-          _ax1.axis('off')
+    def plot_colours(self):
+        _fig, (_ax1, _ax2) = plt.subplots(nrows=2, figsize = (5, 6))
+        for term in self.terms:
+            _ax1.plot([], [], label=' ', color=term.colour, linestyle=term.dash_ls if term.dash else None, marker = None, gapcolor=term.edgecolour)
+            _ax1.scatter([], [], color=term.colour, marker = term.marker, hatch=term.hatch, edgecolor=term.edgecolour, label=' ')
+        _ax1.legend(loc='center', ncols=len(self.terms), frameon=False, markerscale=1)
+        _ax1.axis('off')
 
-          # pichart of all colours and hatches
-          _wedges, _ = _ax2.pie([1]*len(self.terms), labels=[term.alias for term in self.terms], colors=[term.colour for term in self.terms], hatch=[term.hatch for term in self.terms], rotatelabels=True)#, edgecolor=[term.edgecolour for term in self.terms], startangle=90)
-          for wedge, term in zip(_wedges, self.terms):
-               if term.edgecolour:
-                    wedge.set_edgecolor(term.edgecolour)
+        # pichart of all colours and hatches
+        _wedges, _ = _ax2.pie([1]*len(self.terms), labels=[term.alias for term in self.terms], colors=[term.colour for term in self.terms], hatch=[term.hatch for term in self.terms], rotatelabels=True)#, edgecolor=[term.edgecolour for term in self.terms], startangle=90)
+        for wedge, term in zip(_wedges, self.terms):
+            if term.edgecolour:
+                wedge.set_edgecolor(term.edgecolour)
 
-          return _fig
+        return _fig
      
+class TermSubCollection(TermCollection):
+    def __init__(self, terms: Iterable[Term], parent_collection: TermCollection):
+        self.parent_collection = parent_collection
+        self.terms = list(terms)
+
+        self.aliases = [term.alias for term in self.terms]
+        self.regexes = [term.regex for term in self.terms]
+        self.folder_name = parent_collection.folder_name
+
+
+        self.folder = parent_collection.folder
+        self.json_path = parent_collection.json_path
+        self.batches_folder = parent_collection.batches_folder
+        self.prompts_folder = parent_collection.prompts_folder
+
+        self.uuid = parent_collection.uuid + '-sub-' + uuid.uuid5(uuid.NAMESPACE_OID, ''.join([term.alias + term.regex for term in self.terms])).hex
+
+    @classmethod
+    def from_parent(cls, parent_collection: TermCollection, keys: Iterable):
+        terms = [parent_collection[k] for k in keys]
+        return cls(terms, parent_collection)
+
+    @classmethod
+    def from_folder(cls, folder_name: str):
+        raise NotImplementedError('TermSubCollection cannot be created from folder. Use TermCollection.from_folder() to create a parent collection first, then use TermSubCollection.from_parent() to create a subcollection.')
+
+    def __repr__(self):
+        return f'TermSubCollection(parent_collection={self.parent_collection.folder_name}, terms={[term.alias for term in self.terms]})'
+    
 
 
 SOLAR_REGEX = r'''\b(solar\s+(power|energy|farm|park|plant|panel|cell|module|PV|photovoltaic|thermal|roof|rooftop|capacity|generation|project|investment|asset|portfolio|array|system|technology)|
