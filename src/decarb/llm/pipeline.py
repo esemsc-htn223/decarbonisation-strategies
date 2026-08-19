@@ -14,11 +14,11 @@ from decarb.llm.prompt import (
     STATUS_COMPLETED, STATUS_FAILED,
     STATUS_TERMINAL,  STATUS_IN_QUEUE, STATUS_NOT_IN_QUEUE
 )
-from decarb.companies import Company, COS, CompanyCollection, co_files, file_metadata
+from decarb.companies import Company, COMPANIES_ALL, CompanyCollection, co_files, file_metadata
 from decarb.util import REPORT_TYPES, DATA_DIR, TERMS_DIR, OUT_DIR, logger_llm, COMPANIES_DIR
 from decarb.terms import Term, TermCollection, TERMS_ALL
 
-def stage_convert(cos: Company|CompanyCollection = COS, report_types: Iterable[str]|str = REPORT_TYPES,
+def stage_convert(cos: Company|CompanyCollection = COMPANIES_ALL, report_types: Iterable[str]|str = REPORT_TYPES,
                   num_workers: int = 2,
                   overwrite: bool = False,
                   progress_bar: bool = True):

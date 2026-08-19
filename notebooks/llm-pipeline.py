@@ -22,7 +22,7 @@ def _():
     load_dotenv()
 
     from decarb.terms import TERMS_ALL, TERMS_SUMMARY, TERMS_SIMPLE
-    from decarb.companies import Company, CompanyCollection, COS
+    from decarb.companies import Company, CompanyCollection, COMPANIES_ALL
     from decarb.llm import rag, inspection, pipeline, prompt
 
     return TERMS_ALL, inspection, mo, os, pd, pipeline, plt, prompt, rag

@@ -7,7 +7,7 @@ import altair as alt
 import tiktoken
 
 from decarb.terms import Term, TermCollection, TERMS_ALL
-from decarb.companies import COMPANY_ALIASES, COS, CompanyCollection
+from decarb.companies import COMPANY_ALIASES, COMPANIES_ALL, CompanyCollection
 from decarb.util import REPORT_TYPES_LONG
 
 __all__ = [
@@ -136,7 +136,7 @@ def regex_rankings(
 def regex_comparison(
     dfs: dict[str, pd.DataFrame], 
     terms: TermCollection = TERMS_ALL, *,
-    cos: CompanyCollection = COS, 
+    cos: CompanyCollection = COMPANIES_ALL, 
     rank: bool = False,
     rank_zero_fill: Literal['nan', 'min'] = 'nan', rank_lines: bool = True,
     plot_n: str|None = 'words', normed_by: str|None = 'words',
@@ -153,7 +153,7 @@ def regex_comparison(
     terms : TermCollection, optional
         Collection of terms to plot. Default is `TERMS_ALL`.
     cos : CompanyCollection, optional
-        Collection of companies to plot. Default is `COS`.
+        Collection of companies to plot. Default is `COMPANIES_ALL`.
     rank : bool, optional
         Whether to plot rankings instead of mentions. Default is False.
     rank_zero_fill : str, optional

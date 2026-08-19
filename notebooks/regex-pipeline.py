@@ -19,13 +19,13 @@ def _():
 
     from decarb import (
         TERMS_ALL, TERMS_SUMMARY, TERMS_SIMPLE,
-        COS
+        COMPANIES_ALL
     )
     from decarb.regex import regex_pipeline
     from decarb.output.plot import regex_plot_comparison
 
     return (
-        COS,
+        COMPANIES_ALL,
         TERMS_ALL,
         TERMS_SIMPLE,
         TERMS_SUMMARY,
@@ -37,10 +37,10 @@ def _():
 
 
 @app.cell
-def _(COS, TERMS_ALL, TERMS_SIMPLE, TERMS_SUMMARY, regex_pipeline):
-    out = regex_pipeline(TERMS_ALL, COS, reprocess=False)
-    out_sum = regex_pipeline(TERMS_SUMMARY, COS, reprocess=False)
-    out_simple = regex_pipeline(TERMS_SIMPLE, COS, reprocess=True)
+def _(COMPANIES_ALL, TERMS_ALL, TERMS_SIMPLE, TERMS_SUMMARY, regex_pipeline):
+    out = regex_pipeline(TERMS_ALL, COMPANIES_ALL, reprocess=False)
+    out_sum = regex_pipeline(TERMS_SUMMARY, COMPANIES_ALL, reprocess=False)
+    out_simple = regex_pipeline(TERMS_SIMPLE, COMPANIES_ALL, reprocess=True)
     return (out_simple,)
 
 
@@ -52,16 +52,16 @@ def _(TERMS_SIMPLE, out_simple, plt, regex_plot_comparison):
 
 
 @app.cell
-def _(COS, TERMS_SIMPLE, out_simple, plt, regex_plot_comparison):
-    regex_plot_comparison(out_simple['dfs_unnormed'], terms=TERMS_SIMPLE, cos=COS, normed_by=None,
+def _(COMPANIES_ALL, TERMS_SIMPLE, out_simple, plt, regex_plot_comparison):
+    regex_plot_comparison(out_simple['dfs_unnormed'], terms=TERMS_SIMPLE, cos=COMPANIES_ALL, normed_by=None,
                     suptitle='Technology mentions - unnormalised')
     plt.show()
     return
 
 
 @app.cell
-def _(COS, TERMS_SIMPLE, out_simple, plt, regex_plot_comparison):
-    regex_plot_comparison(out_simple['dfs_unnormed'], terms=TERMS_SIMPLE, cos=COS[:2], rank=True,
+def _(COMPANIES_ALL, TERMS_SIMPLE, out_simple, plt, regex_plot_comparison):
+    regex_plot_comparison(out_simple['dfs_unnormed'], terms=TERMS_SIMPLE, cos=COMPANIES_ALL[:2], rank=True,
                     suptitle='Technology mention rankings')
     plt.show()
     return

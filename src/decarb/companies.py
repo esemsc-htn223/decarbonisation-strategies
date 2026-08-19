@@ -1,4 +1,4 @@
-__all__ = ['Company', 'CompanyCollection', 'COS', 'COMPANY_ALIASES', 'co_dir_md_files']
+__all__ = ['Company', 'CompanyCollection', 'COMPANIES_ALL', 'COMPANY_ALIASES', 'co_dir_md_files']
 
 from dataclasses import dataclass
 import os
@@ -686,4 +686,4 @@ def file_metadata(file_path:str) -> dict[str, str|Company|None]:
     }
 
 ### Initialize company collection
-COS = CompanyCollection(COMPANY_ALIASES)
+COMPANIES_ALL = CompanyCollection(COMPANY_ALIASES)
