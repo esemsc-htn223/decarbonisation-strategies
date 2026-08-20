@@ -510,6 +510,17 @@ class CompanyCollection:
     def __repr__(self):
         return self.__str__()
 
+    def get(self, key, default=None) -> Union[Company, None]:
+        '''
+        Get a company from the collection by folder_name or full_name. If not found, return default.
+        
+        Provided for compatibility with dict-like access.
+        '''
+        try:
+            return self[key]
+        except KeyError:
+            return default
+
     def report_folders(self, *, report_type: str = 'all') -> list[str]:
         '''
         Full paths to all report folders for all companies in this collection and report type. 
