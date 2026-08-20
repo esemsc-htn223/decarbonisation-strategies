@@ -192,7 +192,7 @@ def stage_draft(terms: TermCollection=TERMS_ALL, *,
     if not progress_bar:
         print('prompts drafted')
         
-
+# TODO: update stage_submit to use the new Job class and its methods for managing batch submissions and results. 
 def stage_submit(model: str = DEFAULT_MODEL, *,
                  portion_strategy: Literal['max_tokens', 'max_prompts', 'split_into_n'] = 'max_tokens',
                  max_tokens: int = 1_000_000, max_prompts: int = 100, split_into_n: int = 10,
@@ -266,7 +266,7 @@ def stage_submit(model: str = DEFAULT_MODEL, *,
                              'portions-info-' + os.path.basename(jsonl_path).replace('.jsonl', '.json'))
 
     # check if we have any batches currently running
-    batch_statuses = check_batch_status(batch_id = None, on_miss='create')
+    batch_statuses = check_batch_status(batch_ids = None, on_miss='create')
     running_batches = [batch['id'] for batch in batch_statuses if batch['status'] in STATUS_IN_QUEUE]
     if running_batches:
         if not progress_bar:
@@ -342,37 +342,7 @@ def stage_submit(model: str = DEFAULT_MODEL, *,
         json.dump(portion_info, f, indent=4)
     print(f'Batch results processed and retrieved for {len(portion_info["batches"])} batches.')
 
-def stage_gather_ids(status: str = '', *, companies: Company|CompanyCollection = None, terms: TermCollection|None = None):
-    '''
-    Gather the batch IDs of all submitted batches for the given companies and terms, and return them as a list.
-
-    Parameters
-    ----------
-    companies : Company, CompanyCollection or None
-        The company or companies to include in the analysis. If None, includes all companies for which prompts have been drafted. Defaults to None.
-    terms : TermCollection or None
-        The collection of terms to include in the analysis. If None, includes all terms for which prompts have been drafted. Defaults to None.
-    '''
-    batch_ids = []
-    for report in co_files(yield_level='Report', companies=companies):
-        if isinstance(terms, TermCollection):
-            term_coll_folder_names = [terms.folder_name]
-        elif terms is None:
-            term_coll_folder_names = report.term_coll_folder_names()
-        else: 
-            raise ValueError(f'Invalid terms argument: {terms}. Must be a TermCollection or None.')
-
-        for term_coll_folder in term_coll_folder_names:
-            info_path = os.path.join(report.prompts_dir(term_coll_folder), 'portions-info.json')
-            if not os.path.exists(info_path):
-                logger_llm.warning(f'Portions info file not found for {report:full} - {term_coll_folder}. Skipping.')
-                continue
-            with open(info_path, 'r') as f:
-                portion_info = json.load(f)
-                batch_ids.extend(list(portion_info['batches'].keys()))
-    return batch_ids
-
-def stage_retrieve(batch_ids: Iterable[str]|None = None, *, 
+def stage_retrieve(batch_ids: Iterable[str]|str|None = None, *, 
                    progress_bar: bool = True, verbose: bool = False):
     '''
     Retrieve the results of the submitted batches, saving the results as json files in the 
@@ -381,8 +351,9 @@ def stage_retrieve(batch_ids: Iterable[str]|None = None, *,
 
     Parameters
     ----------
-    batch_ids : Iterable[str]
-        The IDs of the batches to retrieve results for.
+    batch_ids : Iterable[str]|str|None
+        The IDs of the batches to retrieve results for. If None (default), will retrieve results 
+        for all batches.
     progress_bar : bool
         Whether to display a progress bar. Defaults to True.
     verbose : bool
@@ -390,7 +361,7 @@ def stage_retrieve(batch_ids: Iterable[str]|None = None, *,
         If progress_bar is True, printing is limited to avoid cluttering the progress bar output.
     '''
     # check all batch results, adding files where needed
-    batch_infos = check_batch_status(batch_id = None, on_miss='create')
+    batch_infos = check_batch_status(batch_ids = batch_ids, on_miss='create')
 
     n_working = 0
     n_stopped = 0

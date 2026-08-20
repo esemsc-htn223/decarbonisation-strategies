@@ -1,9 +1,10 @@
 from dataclasses import dataclass
 import io
-from typing import Literal, Iterator
+from typing import Iterable, Literal, Iterator
 import os
 from dotenv import load_dotenv
 from openai import OpenAI, NotFoundError
+from openai.types import Batch
 from pydantic import BaseModel, Field
 import instructor
 import json
@@ -11,8 +12,9 @@ import time
 import uuid
 import tiktoken
 from tqdm import tqdm
+import pandas as pd
 
-from decarb.companies import Company, COMPANY_ALIASES, Report, file_metadata
+from decarb.companies import Company, CompanyCollection, COMPANY_ALIASES, Report, file_metadata
 from decarb.terms import Term, TermCollection
 from decarb.util import OUT_DIR, REPORT_TYPES_LONG, logger_llm, TERMS_DIR
 
@@ -212,11 +214,13 @@ class Commitment(BaseModel):
 
 class PromptResponse(BaseModel):
     # Question 1: "How positive or negative is the overall sentiment towards {term.prompt_alias}?"
-    q1_sentiment: float = Field(
+    q1_sentiment: float | None = Field(
+        default=None,
         description="Question 1: Sentiment towards the technology, on a scale from -1 (totally negative) to 1 (totally positive)",
         ge=-1.0, le=1.0
     )
     q1_sentiment_quotes: list[QuoteEvidence] = Field(
+        default=[],
         description="Quotes reflecting sentiment towards the technology and a justification for their inclusion. Given as evidence for the sentiment score given in q1_sentiment."  
     )
 
@@ -227,19 +231,23 @@ class PromptResponse(BaseModel):
         ge=1, le=9
     )
     q2_maturity_quotes: list[QuoteEvidence] = Field(
+        default=[],
         description="Quotes reflecting the Technology Readiness Level (TRL) of the technology and a justification for their inclusion. Given as evidence for the maturity given in q2_maturity."
     )
 
     # Question 3: "What stage of commercialisation is {term.prompt_alias} at within the company's operations?"
     q3_stage: Literal["research and development", "pilot", "demonstration", "commercial-deployment", "phasing-out", "unclear"] = Field(
+        default="unclear",
         description="Question 3: The technology's stage of commercialisation within the company's operations."
     )
     q3_stage_quotes: list[QuoteEvidence] = Field(
+        default=[],
         description="Quotes reflecting the technology's stage of commercialisation within the company's operations and a justification for their inclusion. Given as evidence for the stage of commercialisation given in q3_stage."
     )
 
     # Question 4: "What commitments does the company make towards {term.prompt_alias}?"
     q4_commitments: list[Commitment] = Field(
+        default=[],
         description="Question 4: Commitments made towards the technology."
     )
 
@@ -255,6 +263,9 @@ class AnalysisRecord(BaseModel):
     year: int
     term: str
     response: PromptResponse
+
+    def __post_init__(self):
+        self.custom_id = f"{self.company}_{self.report_type}_{self.year}_{self.term}".lower().replace(' ', '-').replace('(', '').replace(')', '')
 
 def prompt_id(report:Report, term:str|Term) -> str:
     '''
@@ -480,8 +491,6 @@ def create_openai_jsonl(
     else:
         return None
 
-#class Job:
-
 @dataclass
 class JSONLPortion:
     # portion control is essential for a healthy diet.
@@ -498,6 +507,261 @@ class JSONLPortion:
     
     def __repr__(self):
         return f'JSONLPortion(start_index={self.start_index}, end_index={self.end_index}, token_count={self.token_count}, portion_len={len(self.portion)})'
+
+class Job:
+    def __init__(self, prompt_jsonl_path: str, terms: TermCollection, companies: CompanyCollection):
+        self.prompt_jsonl_path = prompt_jsonl_path
+        self.id = os.path.basename(prompt_jsonl_path).replace('.jsonl', '')
+        self.n_prompts = sum(1 for _ in open(self.prompt_jsonl_path, 'r'))
+        self.terms = terms
+        self.companies = companies
+
+        self.info_path = os.path.join(os.path.dirname(prompt_jsonl_path), f'{self.id}-info.json')
+        if not os.path.exists(self.info_path):
+            with open(self.info_path, 'w') as f:
+                json.dump({
+                    'parent': self.prompt_jsonl_path,
+                    'n_prompts': self.n_prompts,
+                    'terms_id': terms.uuid,
+                    'terms_folder': terms.folder_name,
+                    'companies_id': companies.uuid,
+                    'companies': [company.folder_name for company in companies.companies],
+                    'status': 'created',  # one of 'created', 'submitted', 'completed', 'failed'
+                    'created_at': time.time(),
+                    'updated_at': time.time(),
+                })
+
+    def __len__(self):
+        return self.n_prompts
+
+    @property
+    def prompt_jsonl(self) -> list[dict]:
+        with open(self.prompt_jsonl_path, 'r') as f:
+            return [json.loads(line) for line in f]
+
+    @property
+    def info(self) -> dict:
+        with open(self.info_path, 'r') as f:
+            return json.load(f)
+
+    @property
+    def status(self) -> str:
+        return self.info['status']
+
+    @property
+    def batches(self) -> list[dict]:
+        return self.info.get('batches', [])
+
+    @property
+    def batch_statuses(self) -> dict:
+        if not self.batches:
+            return {}
+        return {b['id']: b['status'] for b in self.batches}
+
+    def update_status(self, status: Literal['created', 'submitted', 'completed', 'failed', 'auto'] = 'auto'):
+        '''
+        Update the job status in the info file.
+
+        Parameters
+        ----------
+        status : Literal['created', 'submitted', 'completed', 'failed', 'auto']
+            The new status of the job. Should be one of 'created', 'submitted', 'completed', or 'failed'.
+            If 'auto' is provided, the status will be determined based on the statuses of the batches:
+            - 'completed': if all batches are completed 
+            - 'failed': if any batch is failed
+            - 'submitted': if any batch is still in progress
+            - 'created': if no batches have been submitted yet
+        '''
+        status = status.lower()
+        if status not in ['created', 'submitted', 'completed', 'failed', 'auto']:
+            raise ValueError(f'status should be one of "created", "submitted", "completed", "failed", or "auto". Got {status}')
+        if status == 'auto':
+            batch_statuses = self.batch_statuses
+            if all(s == 'completed' for s in batch_statuses.values()):
+                status = 'completed'
+            elif any(s in STATUS_FAILED for s in batch_statuses.values()):
+                status = 'failed'
+            elif any(s in STATUS_IN_QUEUE for s in batch_statuses.values()):
+                status = 'submitted'
+            else:
+                status = 'created'
+        info = self.info
+        info['status'] = status
+        info['updated_at'] = time.time()
+        with open(self.info_path, 'w') as f:
+            json.dump(info, f)
+
+    def update_batch(self, batch_info: dict):
+        '''
+        Update the job info with the given batch information. If a batch with the same ID 
+        already exists, it will be replaced. Otherwise, the new batch will be added 
+        to the list of batches.
+
+        Parameters
+        ----------
+        batch_info : dict
+            A dictionary containing information about the batch, including at least an 'id' key.
+        '''
+        info = self.info
+        if 'batches' not in info:
+            info['batches'] = [batch_info]
+        else:
+            # check if batch with same id already exists
+            for i, b in enumerate(info['batches']):
+                if b['id'] == batch_info['id']:
+                    info['batches'][i] = batch_info
+                    break
+            else:
+                info['batches'].append(batch_info)
+        info['updated_at'] = time.time()
+        with open(self.info_path, 'w') as f:
+            json.dump(info, f)
+
+    def submit(self, 
+               model:str = DEFAULT_MODEL, *,
+               portion_strategy:Literal['max_tokens', 'max_prompts', 'split_into_n'] = 'max_tokens', 
+               portion_max_tokens:int = 1_000_000, portion_max_prompts:int = 100, portion_split_into_n:int = 10,
+               portion_encoding:str = 'o200k_base',
+               portion_save:bool = False, portion_save_dir:str|None = None, 
+               overwrite:bool = False,
+               attempt_resubmit:bool = True,
+               progress_bar:bool = True,
+               wait_interval:int = 120):
+        '''
+        Submit the job to the OpenAI API, splitting the jsonl into portions according to the specified 
+        strategy.
+
+        Parameters
+        ----------
+        portion_strategy : Literal['max_tokens', 'max_prompts', 'split_into_n'], optional
+            The strategy to use for portioning the jsonl file. Defaults to 'max_tokens'.
+        portion_max_tokens : int, optional
+            The maximum number of tokens that each portion should contain. Defaults to 1,000,000.
+            Only has an effect if `portion_strategy` is 'max_tokens'.
+        portion_max_prompts : int, optional
+            The maximum number of prompts that each portion should contain. Defaults to 100.
+            Only has an effect if `portion_strategy` is 'max_prompts'.
+        portion_split_into_n : int, optional
+            The number of portions to split the jsonl file into. Defaults to 10.
+            Only has an effect if `portion_strategy` is 'split_into_n'.
+        portion_encoding : str, optional
+            The name of the encoding to use for token counting. Defaults to 'o200k_base'.
+        portion_save : bool, optional
+            Whether to save the portions to files. Defaults to False.
+        portion_save_dir : str or None, optional
+            The directory to save the portions to. If None, will save in the same directory as the jsonl file, 
+            in a folder named 'portions-<jsonl_filename>'. Defaults to None.
+        '''
+        info = self.info
+
+        # check if we have batches already submitted
+        if info['status'] in ['submitted', 'completed']:
+            print(f'Job {self.id} has already been submitted. Current status: {info["status"]}.')
+            if info['status'] == 'submitted':
+                # get value counts for each status
+                batch_statuses = self.batch_statuses
+                status_counts = {status: list(batch_statuses.values()).count(status) for status in set(batch_statuses.values())}
+                print(f'Batch statuses: {status_counts}')
+            return
+        elif info['status'] == 'failed':
+            print(f'Job {self.id} failed.')
+            if not attempt_resubmit:
+                print('attempt_resubmit is False, so not attempting to resubmit. To resubmit, set attempt_resubmit=True.')
+                # Implementation for resubmitting failed job
+                return
+            print('attempt_resubmit = True, resubmitting.')
+
+        # check if there are any currently running batches
+        global_batch_statuses = check_batch_status(batch_ids = None, on_miss = 'create')  # todo: what to do with orphan batches? how can we check which job they belong to?
+        running_batches = [batch['id'] for batch in global_batch_statuses if batch['status'] in STATUS_IN_QUEUE]
+        if running_batches:
+            if not progress_bar:
+                print(f'Found {len(running_batches)} running batches. Retrieving results for these batches before submitting new ones.')
+            for batch_id in tqdm(running_batches, desc="Retrieving results for running batches", disable=not progress_bar, bar_format='{desc}: {bar} {n}/{total}'):
+                retrieve_batch_results(
+                    batch_id=batch_id, 
+                    save=True, 
+                    if_incomplete='wait', wait_interval=wait_interval,
+                    if_failed='ignore'
+                )
+
+        # divide into portions
+        portion_strategy_param = {'max_tokens': portion_max_tokens, 'max_prompts': portion_max_prompts, 'split_into_n': portion_split_into_n}[portion_strategy]
+        if not progress_bar:
+            print(f'Submitting {self.n_prompts} prompts to {model} in portions using strategy {portion_strategy} with parameter {portion_strategy_param}.')
+        with tqdm(total=self.n_prompts, desc="Submitting prompts", disable=not progress_bar, bar_format='{desc}: {bar} {n}/{total}') as pbar:
+            for portion in jsonl_portions(
+                jsonl_path=self.prompt_jsonl_path,
+                strategy=portion_strategy, max_tokens=portion_max_tokens, max_prompts=portion_max_prompts, split_into_n=portion_split_into_n,
+                encoding_name=portion_encoding, save=portion_save, save_dir=portion_save_dir, overwrite=overwrite
+            ):
+                batch = submit_openai_batch(
+                    jsonl=portion.portion,
+                    save=False, return_type='batch'
+                )
+                batch_info = {
+                    'id': batch['id'],
+                    'n_prompts': len(portion),
+                    'token_count': portion.token_count,
+                    'start_index': portion.start_index,
+                    'end_index': portion.end_index,
+                    'result_path': None,  # to be updated after retrieval
+                }
+                batch_info.update(batch.model_dump())
+                self.update_batch(batch_info)
+
+                # retrieve before submitting next portion - assuming we're maximising enqueued limit
+                out_path = retrieve_batch_results(
+                    batch_id=batch['id'],
+                    save=True,
+                    if_incomplete='wait', wait_interval=wait_interval,
+                    if_failed='ignore',
+                    return_type='path'
+                )
+                # update batch info with result path
+                batch_info['result_path'] = out_path
+                self.update_batch(batch_info)
+
+                pbar.update(len(portion))
+
+        self.update_status('auto')
+
+        print(f'Job {self.id} submitted. Current status: {self.info["status"]}.')
+
+    @property
+    def has_results(self) -> Literal['all', 'partial', 'none']:
+        if not self.batches:
+            return 'none'
+        if all(b['result_path'] is not None for b in self.batches):
+            return 'all'
+        if any(b['result_path'] is not None for b in self.batches):
+            return 'partial'
+        return 'none'
+
+    def batch_has_results(self, batch_id:str) -> bool:
+        for b in self.batches:
+            if b['id'] == batch_id:
+                return b['result_path'] is not None
+        raise ValueError(f'Batch with id {batch_id} not found in job {self.id}.')
+    
+    @property
+    def output_paths(self) -> list[str]:
+        if self.has_results == 'none':
+            return []
+        return [b['result_path'] for b in self.batches if b['result_path'] is not None]
+
+    @property
+    def outputs(self) -> list[dict]:
+        records = []
+        for path in self.output_paths:
+            with open(path, 'r') as f:
+                for line in f:
+                    record = json.loads(line)
+                    records.append(record)
+        return records
+
+    
+
 
 def jsonl_portions(
         jsonl_path:str, *,
@@ -536,6 +800,10 @@ def jsonl_portions(
         in a folder named 'portions-<jsonl_filename>'. Defaults to None.
     overwrite : bool, optional
         Whether to overwrite existing files. Defaults to False.
+
+    Yields
+    ------
+    JSONLPortion
     '''
     if strategy not in ['max_tokens', 'max_prompts', 'split_into_n']:
         raise ValueError(f'strategy should be one of "max_tokens", "max_prompts", or "split_into_n". Got {strategy}')
@@ -676,8 +944,9 @@ def jsonl_stats(jsonl_path:str, *, encoding_name:str = 'o200k_base') -> dict:
 
 def submit_openai_batch(
         jsonl:str|list[dict], *,
-        save_dir:str|None = None
-) -> str:
+        save_dir:str|None = None,
+        save: bool = True, return_type: Literal['id', 'batch', 'none'] = 'id'
+) -> str | Batch | None:
     '''
     Submit a batch of prompts for analysis by OpenAI models. Returns the batch ID (`batch_id`), and saves the batch
     details to `batch_id`.json in `save_dir` (if provided, or in the 'batches' folder in the relevant TermCollection 
@@ -692,11 +961,18 @@ def submit_openai_batch(
         The directory to save the batch details json to. Will be created if it does not exist. If None (the default), 
         will be inferred from the path provided to `jsonl`. If `jsonl` is provided as a list of 
         dicts, this argument must be provided.
+    save : bool, optional
+        Whether to save the batch details json to `save_dir`. Defaults to True.
+    return_type : Literal['id', 'batch', 'none'], optional
+        What to return from the function. Defaults to 'id'.
+        - `'id'`: return the ID of the submitted batch (default)
+        - `'batch'`: return the batch object itself
+        - `'none'`: return None
     
     Returns
     -------
-    str
-        The ID of the submitted batch.
+    str | Batch | None
+        The ID of the submitted batch, the batch object itself, or None based on the `return_type` parameter.
     '''
     if isinstance(jsonl, str):
         if not os.path.isfile(jsonl):
@@ -709,17 +985,21 @@ def submit_openai_batch(
     else:
         raise ValueError(f'jsonl should be either a path to a jsonl file, or a list of dictionaries containing the data. Got {type(jsonl)}')
 
+    return_type = return_type.lower()
+    if return_type not in ['id', 'batch', 'none']:
+        raise ValueError(f'return_type should be one of "id", "batch", or "none". Got {return_type}')
     # determine term collection for save location
-    if save_dir is None:
-        if isinstance(jsonl, str):
-            terms = os.path.basename(os.path.dirname(os.path.dirname(jsonl)))  # get term collection from parent folder name
-            if not os.path.exists(os.path.join(TERMS_DIR, terms)):
-                raise ValueError(f'TermCollection "{terms}" inferred from jsonl path {jsonl} does not exist in TERMS_DIR. Check the path or specify save_dir explicitly.')
-            save_dir = os.path.join(TERMS_DIR, terms, 'batches')
-        else:
-            raise ValueError(f'If jsonl is provided as a list of dicts, save_dir must be specified to determine where to save batch details. Got jsonl as list and save_dir={save_dir}')
-    elif not os.path.isdir(save_dir):
-            raise ValueError(f'save_dir should be a path to a directory where batch details can be saved. Got {save_dir}')
+    if save:
+        if save_dir is None:
+            if isinstance(jsonl, str):
+                terms = os.path.basename(os.path.dirname(os.path.dirname(jsonl)))  # get term collection from parent folder name
+                if not os.path.exists(os.path.join(TERMS_DIR, terms)):
+                    raise ValueError(f'TermCollection "{terms}" inferred from jsonl path {jsonl} does not exist in TERMS_DIR. Check the path or specify save_dir explicitly.')
+                save_dir = os.path.join(TERMS_DIR, terms, 'batches')
+            else:
+                raise ValueError(f'If jsonl is provided as a list of dicts, save_dir must be specified to determine where to save batch details. Got jsonl as list and save_dir={save_dir}')
+        elif not os.path.isdir(save_dir):
+                raise ValueError(f'save_dir should be a path to a directory where batch details can be saved. Got {save_dir}')
 
     # set up client
     load_dotenv()
@@ -749,25 +1029,32 @@ def submit_openai_batch(
     logger_llm.debug(f'OPENAI BATCH CREATED: {batch.id} for file {batch_file.id}.')
 
     # save
-    os.makedirs(save_dir, exist_ok=True)
-    batch_save_path = os.path.join(save_dir, f'{batch.id}.json')
-    with open(batch_save_path, 'w') as f:
-        f.write(json.dumps(batch.model_dump(), indent=4))
-    logger_llm.debug(f'BATCH DETAILS SAVED: {batch.id} at {batch_save_path}')
+    if save:
+        os.makedirs(save_dir, exist_ok=True)
+        batch_save_path = os.path.join(save_dir, f'{batch.id}.json')
+        with open(batch_save_path, 'w') as f:
+            f.write(json.dumps(batch.model_dump(), indent=4))
+        logger_llm.debug(f'BATCH DETAILS SAVED: {batch.id} at {batch_save_path}')
 
-    return batch.id
+    if return_type == 'id':
+        return batch.id
+    elif return_type == 'batch':
+        return batch
+    elif return_type == 'none':
+        return None
 
 
-def check_batch_status(batch_id:str | None = None, *, 
+def check_batch_status(batch_ids:Iterable[str] | str | None = None, *, 
                        on_miss: Literal['raise', 'print', 'pass', 'create'] = 'raise',
-                       progress_bar: bool = True) -> dict:
+                       progress_bar: bool = True) -> list[dict]:
     '''
     Check the status of all batches, or the requested batch, and update the saved batch details file.
 
     Parameters
     ----------
-    batch_id : str | None
-        The ID of the batch to check (also the name of the batch json file), as returned by submit_openai_batch.
+    batch_ids : Iterable[str] | str | None
+        The ID(s) of the batch(es) to check (also the name of the batch json file), as returned by submit_openai_batch.
+        If None (default), will check the status of all batches in the TERMS_DIR.
     on_miss : Literal['raise', 'print', 'pass', 'create'], optional
         What to do if the batch details file is not found.
         - `'raise'`: raise a FileNotFoundError (default)
@@ -777,8 +1064,8 @@ def check_batch_status(batch_id:str | None = None, *,
         
     Returns
     -------
-    dict
-        The updated batch details, as a dictionary.
+    list[dict]
+        The updated batch details, as a list of dictionaries.
     '''
     load_dotenv()
     client = OpenAI()
@@ -812,7 +1099,7 @@ def check_batch_status(batch_id:str | None = None, *,
                     f.write(json.dumps(batch.model_dump(), indent=4))
                 logger_llm.debug(f'BATCH DETAILS CREATED: {batch.id} at {batch_file_path}')
 
-    if batch_id is None:
+    if batch_ids is None:
         # Check status of all batches
         batches = client.batches.list()
         for batch in batches:
@@ -820,20 +1107,24 @@ def check_batch_status(batch_id:str | None = None, *,
             update_batch_file(batch)
         return [batch.model_dump() for batch in batches]
     else:
-        batch = client.batches.retrieve(batch_id)
-        logger_llm.debug(f'BATCH STATUS CHECKED: {batch.id} - status={batch.status}, completed={batch.request_counts.completed}/{batch.request_counts.total}, created at {batch.created_at}, updated at {time.time()}')
-    
-    # find batch details file and update it
-    update_batch_file(batch)
-    
-    return batch.model_dump()
+        if isinstance(batch_ids, str):
+            batch_ids = [batch_ids]
+        batches = []
+        for batch_id in batch_ids:
+            batch = client.batches.retrieve(batch_id)
+            logger_llm.debug(f'BATCH STATUS CHECKED: {batch.id} - status={batch.status}, completed={batch.request_counts.completed}/{batch.request_counts.total}, created at {batch.created_at}, updated at {time.time()}')
+            update_batch_file(batch)
+            batches.append(batch)
+        return [batch.model_dump() for batch in batches]
+
     
 def retrieve_batch_results(batch_id:str, *, 
                        if_incomplete:Literal['error', 'ignore', 'wait'] = 'error',
                        if_failed:Literal['error', 'ignore'] = 'error',
                        if_output_missing:Literal['error', 'ignore'] = 'error',
                        save:bool = True, save_as:str = None,
-                       wait_interval: int = 120) -> list[dict]|None:
+                       wait_interval: int = 120,
+                       return_type:Literal['contents', 'path'] = 'contents') -> list[dict]|None:
     '''
     Retrieve the results of the requested batch.
 
@@ -866,6 +1157,12 @@ def retrieve_batch_results(batch_id:str, *,
     list[dict]|None
         The batch results, as a list of dictionaries, or None if the batch is not completed.
     '''
+
+    if return_type not in ['contents', 'path']:
+        raise ValueError(f'return_type should be one of "contents" or "path". Got {return_type}')
+    elif return_type == 'path' and not save:
+        raise ValueError(f'return_type="path" requires save=True. Got save={save}')
+
     load_dotenv()
     client = OpenAI()
     
@@ -934,4 +1231,7 @@ def retrieve_batch_results(batch_id:str, *,
         out_file.write_to_file(save_path)
         logger_llm.debug(f'BATCH RESULTS SAVED: {batch.id} at {save_path}')
 
-    return [json.loads(line) for line in out_file.iter_lines()]
+    if return_type.lower() == 'contents':
+        return [json.loads(line) for line in out_file.iter_lines()]
+    else:
+        return save_path
