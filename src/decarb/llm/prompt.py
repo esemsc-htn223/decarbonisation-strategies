@@ -170,7 +170,7 @@ Assign a TRL from 1-9 based on the following definitions:
 - TRL 9. Technically ready for sale or licensing: Successfully operated and commercially available with technology guarantees. Ready for further learning-by-doing.
 If insufficient information is available to assign a TRL, leave the answer null."
 
-3. "At what stage of commercialisation is {term.prompt_alias} within {co_alias}?
+3. "At what stage of commercialisation is {term.prompt_alias} within the company?
 Choose from: 
 - 'research and development'
 - 'pilot'
@@ -510,29 +510,65 @@ class JSONLPortion:
 
 class Job:
     def __init__(self, prompt_jsonl_path: str, terms: TermCollection, companies: CompanyCollection):
+        if not os.path.exists(prompt_jsonl_path):
+            raise FileNotFoundError(f'Prompt jsonl file not found at {prompt_jsonl_path}. Cannot create Job.')
         self.prompt_jsonl_path = prompt_jsonl_path
         self.id = os.path.basename(prompt_jsonl_path).replace('.jsonl', '')
         self.n_prompts = sum(1 for _ in open(self.prompt_jsonl_path, 'r'))
         self.terms = terms
         self.companies = companies
 
+        # construct info
         self.info_path = os.path.join(os.path.dirname(prompt_jsonl_path), f'{self.id}-info.json')
         if not os.path.exists(self.info_path):
+            info = {
+                'parent': self.prompt_jsonl_path,
+                'n_prompts': self.n_prompts,
+                'terms_id': terms.uuid,
+                'terms_folder': terms.folder_name,
+                'companies_id': companies.uuid,
+                'companies': [company.folder_name for company in companies.companies],
+                'status': 'created',  # one of 'created', 'submitted', 'completed', 'failed'
+                'created_at': time.time(),
+                'updated_at': time.time(),
+            }
+            # handle legacy file if exists - will be deprecated in future versions
+            if os.path.exists(os.path.join(os.path.dirname(prompt_jsonl_path), f'portions-info-{self.id}.json')):
+                with open(os.path.join(os.path.dirname(prompt_jsonl_path), f'portions-info-{self.id}.json'), 'r') as f:
+                    legacy_info = json.load(f)
+                if 'batches' in legacy_info and legacy_info['batches']:
+                    portioning_strategy = legacy_info.get('portioning_strategy', None)
+                    portioning_param = legacy_info.get('portioning_param', None)
+                    batches_folder = os.path.join(os.path.dirname(os.path.dirname(prompt_jsonl_path)), 'batches')
+                    batches = []
+                    for batch_id in legacy_info['batches']:
+                        batch_data = legacy_info['batches'][batch_id]
+                        batch_data = {
+                            'id': batch_id,
+                            'portioning_strategy': portioning_strategy,
+                            'portioning_strategy_param': portioning_param,
+                            'start_index': batch_data['start_index'],
+                            'end_index': batch_data['end_index'],
+                            'est_token_count': batch_data['token_count'],
+                            'prompt_count': batch_data['prompt_count'],
+                            'completed': batch_data['completed'],
+                            'status': batch_data['status'],
+                        }
+                        with open(os.path.join(batches_folder, f'{batch_id}.json'), 'r') as f:
+                            batch_data['info'] = json.load(f)
+                        batches.append(batch_data)
+                    info['batches'] = batches
             with open(self.info_path, 'w') as f:
-                json.dump({
-                    'parent': self.prompt_jsonl_path,
-                    'n_prompts': self.n_prompts,
-                    'terms_id': terms.uuid,
-                    'terms_folder': terms.folder_name,
-                    'companies_id': companies.uuid,
-                    'companies': [company.folder_name for company in companies.companies],
-                    'status': 'created',  # one of 'created', 'submitted', 'completed', 'failed'
-                    'created_at': time.time(),
-                    'updated_at': time.time(),
-                })
+                json.dump(info, f, indent=4)
+
+            self.update_status('auto')  # update status based on batches if any
+            
 
     def __len__(self):
         return self.n_prompts
+
+    def __repr__(self):
+        return f'Job(id={self.id}, n_prompts={self.n_prompts}, status={self.status})'
 
     @property
     def prompt_jsonl(self) -> list[dict]:
@@ -589,7 +625,7 @@ class Job:
         info['status'] = status
         info['updated_at'] = time.time()
         with open(self.info_path, 'w') as f:
-            json.dump(info, f)
+            json.dump(info, f, indent=4)
 
     def update_batch(self, batch_info: dict):
         '''
@@ -615,7 +651,7 @@ class Job:
                 info['batches'].append(batch_info)
         info['updated_at'] = time.time()
         with open(self.info_path, 'w') as f:
-            json.dump(info, f)
+            json.dump(info, f, indent=4)
 
     def submit(self, 
                model:str = DEFAULT_MODEL, *,
