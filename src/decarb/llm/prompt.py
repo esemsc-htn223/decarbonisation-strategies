@@ -528,7 +528,7 @@ class Job:
                 'terms_folder': terms.folder_name,
                 'companies_id': companies.uuid,
                 'companies': [company.folder_name for company in companies.companies],
-                'status': 'created',  # one of 'created', 'submitted', 'completed', 'failed'
+                'status': 'created',  # one of 'created', 'working', 'completed', 'failed', 'part-failed-completed', 'part-failed-working'
                 'created_at': time.time(),
                 'updated_at': time.time(),
             }
@@ -561,7 +561,7 @@ class Job:
             with open(self.info_path, 'w') as f:
                 json.dump(info, f, indent=4)
 
-            self.update_status('auto')  # update status based on batches if any
+        self.update_status('auto')  # update status based on batches if any
             
 
     def __len__(self):
@@ -594,31 +594,49 @@ class Job:
             return {}
         return {b['id']: b['status'] for b in self.batches}
 
-    def update_status(self, status: Literal['created', 'submitted', 'completed', 'failed', 'auto'] = 'auto'):
+    @property
+    def n_batch_statuses(self) -> dict:
+        if not self.batches:
+            return {}
+        statuses = [b['status'] for b in self.batches]
+        return {s: statuses.count(s) for s in set(statuses)}
+
+    def batches_by_status(self, status: str) -> list[dict]:
+        if not self.batches:
+            return []
+        return [b for b in self.batches if b['status'] == status]
+
+    def update_status(self, status: Literal['created', 'working', 'completed', 'failed', 'part-failed-completed', 'part-failed-working', 'auto'] = 'auto'):
         '''
         Update the job status in the info file.
 
         Parameters
         ----------
-        status : Literal['created', 'submitted', 'completed', 'failed', 'auto']
-            The new status of the job. Should be one of 'created', 'submitted', 'completed', or 'failed'.
+        status : Literal['created', 'working', 'completed', 'failed', 'part-failed-completed', 'part-failed-working', 'auto']
+            The new status of the job. Should be one of 'created', 'working', 'completed', 'failed', 'part-failed-completed', or 'part-failed-working'.
             If 'auto' is provided, the status will be determined based on the statuses of the batches:
-            - 'completed': if all batches are completed 
-            - 'failed': if any batch is failed
-            - 'submitted': if any batch is still in progress
             - 'created': if no batches have been submitted yet
+            - 'completed': if all batches are completed 
+            - 'failed': if all batches have failed
+            - 'working': if any batch is working, and no batches have failed
+            - 'part-failed-completed': if any batch has failed and all other batches are completed
+            - 'part-failed-working': if any batch has failed and any batch is working
         '''
         status = status.lower()
-        if status not in ['created', 'submitted', 'completed', 'failed', 'auto']:
-            raise ValueError(f'status should be one of "created", "submitted", "completed", "failed", or "auto". Got {status}')
+        if status not in ['created', 'working', 'completed', 'failed', 'part-failed-completed', 'part-failed-working', 'auto']:
+            raise ValueError(f'status should be one of "created", "working", "completed", "failed", "part-failed-completed", "part-failed-working", or "auto". Got {status}')
         if status == 'auto':
             batch_statuses = self.batch_statuses
             if all(s == 'completed' for s in batch_statuses.values()):
                 status = 'completed'
-            elif any(s in STATUS_FAILED for s in batch_statuses.values()):
+            elif all(s in STATUS_FAILED for s in batch_statuses.values()):
                 status = 'failed'
-            elif any(s in STATUS_IN_QUEUE for s in batch_statuses.values()):
-                status = 'submitted'
+            elif any(s in STATUS_WORKING for s in batch_statuses.values()) and not any(s in STATUS_FAILED for s in batch_statuses.values()):
+                status = 'working'
+            elif any(s in STATUS_FAILED for s in batch_statuses.values()) and all(s == 'completed' for s in batch_statuses.values() if s not in STATUS_FAILED):
+                status = 'part-failed-completed'
+            elif any(s in STATUS_FAILED for s in batch_statuses.values()) and any(s in STATUS_WORKING for s in batch_statuses.values()):
+                status = 'part-failed-working'
             else:
                 status = 'created'
         info = self.info
