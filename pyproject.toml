@@ -29,6 +29,7 @@ instructor = ">=1.15.4,<2"
 openai = ">=2.48.0,<3"
 anthropic = ">=0.76.0,<0.77"
 altair-all = ">=6.2.2,<7"
+pytest = ">=9.1.1,<10"
 
 [tool.pixi.pypi-dependencies]
 pymupdf4llm = ">=1.28.0, <2"
