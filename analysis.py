@@ -60,23 +60,35 @@ def _(llm):
 
 @app.cell
 def _(job_1, job_2):
+    job = job_1.merge(job_2)
+    job
+    return (job,)
+
+
+@app.cell
+def _(job):
+    job.prompts_comprehensive, job.results_comprehensive
+    return
+
+
+@app.cell
+def _(job):
     # coverage check: every prompt should either have a result, or show up as missing
     {
-        _job.id: {
-            'status': _job.status,
-            'batches': _job.n_batch_statuses,
-            'results': len(_job.output_paths),
-            'completed': f'{len(_job.completed_prompts)}/{_job.n_prompts}',
-            'missing': _job.missing_prompts,
+        job.id: {
+            'status': job.status,
+            'batches': job.n_batch_statuses,
+            'results': len(job.output_paths),
+            'completed': f'{len(job.completed_prompts)}/{job.n_prompts}',
+            'missing': job.missing_prompts,
         }
-        for _job in (job_1, job_2)
     }
     return
 
 
 @app.cell
-def _(llm, job_1, job_2):
-    df_test = llm.results.to_df(job=[job_1, job_2])
+def _(job, llm):
+    df_test = llm.results.to_df(job=job)
     df_test
     return (df_test,)
 
@@ -98,15 +110,17 @@ def _(df_test, mo, output):
 
 
 @app.cell
-def _(df_test):
-    df_test['q1_sentiment'].round(decimals = 1).value_counts()
+def _(job_1):
+    import datetime
+
+    datetime.date.fromtimestamp(min(batch['submitted_at'] for batch in job_1.batches))
     return
 
 
 @app.cell
-def _(TERMS_ALL, df_test, plot_terms_heatmap, util):
+def _(TERMS_ALL, df_test, output, util):
     for _q in ['q1_sentiment', 'q2_maturity', 'q3_stage']:
-        _fig = plot_terms_heatmap(df_test, _q, figsize=(9,15), return_type='figure')
+        _fig = output.plot.llm_terms_heatmap(df_test, _q, figsize=(9,15), return_type='figure')
         _fig.savefig(f'{util.OUT_DIR}/{TERMS_ALL.folder_name}/heatmap-{_q}-20260805.png', dpi=300)
     return
 
