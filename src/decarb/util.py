@@ -4,7 +4,8 @@ import logging
 import os
 
 # Data directories
-DATA_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..', 'data'))
+BASE_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..'))
+DATA_DIR = os.path.abspath(os.path.join(BASE_DIR, 'data'))
 if not os.path.exists(DATA_DIR):
     os.makedirs(DATA_DIR)
 COMPANIES_DIR = os.path.join(DATA_DIR, 'companies')
@@ -18,11 +19,19 @@ if not os.path.exists(LOG_DIR):
     os.makedirs(LOG_DIR)
 
 
-OUT_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..', 'out'))
+OUT_DIR = os.path.abspath(os.path.join(BASE_DIR, 'out'))
 if not os.path.exists(OUT_DIR):
     os.makedirs(OUT_DIR)
 
 
+
+
+def resolve_path(path: str) -> str:
+    '''
+    Resolve a path against the repository root. Absolute paths are returned unchanged. Relative
+    paths are taken as relative to BASE_DIR, not the current working directory.
+    '''
+    return path if os.path.isabs(path) else os.path.join(BASE_DIR, path)
 
 
 REPORT_TYPES = {'annual-report', 'sustainability-report'}

@@ -7,16 +7,13 @@ from tqdm import tqdm
 
 from decarb.llm.rag import search_chunks, pdf_to_md, chunk_md
 from decarb.llm.prompt import (
-    construct_prompt, create_openai_jsonl, jsonl_portions, 
-    submit_openai_batch, check_batch_status, retrieve_batch_results,
+    construct_prompt,
+    Job,
     DEFAULT_MODEL,
-    STATUS_WORKING, STATUS_FAILING, 
-    STATUS_COMPLETED, STATUS_FAILED,
-    STATUS_TERMINAL,  STATUS_IN_QUEUE, STATUS_NOT_IN_QUEUE
 )
-from decarb.companies import Company, COMPANIES_ALL, CompanyCollection, co_files, file_metadata
-from decarb.util import REPORT_TYPES, DATA_DIR, TERMS_DIR, OUT_DIR, logger_llm, COMPANIES_DIR
-from decarb.terms import Term, TermCollection, TERMS_ALL
+from decarb.companies import Company, COMPANIES_ALL, CompanyCollection, co_files
+from decarb.util import REPORT_TYPES, logger_llm
+from decarb.terms import TermCollection, TERMS_ALL
 
 def stage_convert(cos: Company|CompanyCollection = COMPANIES_ALL, report_types: Iterable[str]|str = REPORT_TYPES,
                   num_workers: int = 2,
@@ -192,18 +189,20 @@ def stage_draft(terms: TermCollection=TERMS_ALL, *,
     if not progress_bar:
         print('prompts drafted')
         
-# TODO: update stage_submit to use the new Job class and its methods for managing batch submissions and results. 
 def stage_submit(model: str = DEFAULT_MODEL, *,
                  portion_strategy: Literal['max_tokens', 'max_prompts', 'split_into_n'] = 'max_tokens',
-                 max_tokens: int = 1_000_000, max_prompts: int = 100, split_into_n: int = 10,
+                 max_tokens: int = 900_000, max_prompts: int = 100, split_into_n: int = 10,
                  encoding: str = 'o200k_base',
-                 companies: Company|CompanyCollection = None, 
+                 companies: Company|CompanyCollection = None,
                  terms: TermCollection|None = None,
+                 enqueued_token_limit: int = 900_000,
+                 max_attempts: int = 3,
                  overwrite: bool = False,
                  progress_bar: bool = True,
-                 wait_interval: int = 120):
+                 wait_interval: int = 120) -> Job:
     '''
-    Submit all prompts created in stage_draft for analysis, and save the batch details as json files.
+    Submit all prompts created in stage_draft for analysis. Returns a Job object, which can be
+    used to keep track of the run's status.
 
     Parameters
     ----------
@@ -213,7 +212,7 @@ def stage_submit(model: str = DEFAULT_MODEL, *,
         The strategy to use for splitting the prompts into batches. Defaults to 'max_tokens'.
     max_tokens : int
         The maximum number of tokens to include in each batch portion submitted to the LLM. Defaults
-        to 1,000,000.
+        to 900,000.
     max_prompts : int
         The maximum number of prompts to include in each batch portion submitted to the LLM. Defaults
         to 100.
@@ -225,12 +224,27 @@ def stage_submit(model: str = DEFAULT_MODEL, *,
         The company or companies to include in the analysis. If None, includes all companies for which prompts have been drafted. Defaults to None.
     terms : TermCollection or None
         The collection of terms to include in the analysis. If None, includes all terms for which prompts have been drafted. Defaults to None.
+    enqueued_token_limit : int
+        The account's enqueued token limit for the model. Submission waits for headroom under this
+        limit before sending each portion. Defaults to 900,000.
+    max_attempts : int
+        How many times to resubmit a portion rejected for exceeding the enqueued token limit. Defaults to 3.
     overwrite : bool
-        Whether to overwrite existing analysis results. Defaults to False.
+        Whether to rewrite the input jsonl if it already exists. Defaults to False.
     progress_bar : bool
         Whether to display a progress bar during the submission process. Defaults to True.
     wait_interval : int
         The number of seconds to wait between checking the status of submitted batches. Defaults to 120 seconds.
+
+    Returns
+    -------
+    Job
+        The submitted job.
+
+    Raises
+    ------
+    ValueError
+        If `terms` is neither a TermCollection nor None.
     '''
     # collect all prompt file paths. assuming all text files are to be analysed.
     file_paths = []
@@ -250,153 +264,56 @@ def stage_submit(model: str = DEFAULT_MODEL, *,
                     file_paths.append(report.prompt_path(term_coll_folder, prompt_file))
     logger_llm.info(f'COLLECTED PROMPTS: terms={terms} {len(file_paths)} prompt files found in .{len(list(co_files(yield_level="Report", companies=companies)))} reports.')
 
-    # create jsonl for openai batch
-    jsonl_path = create_openai_jsonl(
-        prompt_paths=file_paths,
-        model=model,
-        save=True,
-        overwrite=overwrite,
-        return_type='path'
+    job = Job.from_prompts(file_paths, model=model, overwrite=overwrite)
+    job.submit(
+        portion_strategy=portion_strategy,
+        portion_max_tokens=max_tokens, portion_max_prompts=max_prompts, portion_split_into_n=split_into_n,
+        portion_encoding=encoding,
+        enqueued_token_limit=enqueued_token_limit, max_attempts=max_attempts,
+        overwrite=overwrite, progress_bar=progress_bar, wait_interval=wait_interval
     )
+    return job
 
-    # submit portions of jsonl to openai
-    terms_coll =  TermCollection.from_folder(os.path.dirname(os.path.dirname(file_paths[0])))  # structure asserted in create_openai_jsonl
-    save_dir = terms_coll.batches_folder
-    info_path = os.path.join(terms_coll.prompts_folder, 
-                             'portions-info-' + os.path.basename(jsonl_path).replace('.jsonl', '.json'))
-
-    # check if we have any batches currently running
-    batch_statuses = check_batch_status(batch_ids = None, on_miss='create')
-    running_batches = [batch['id'] for batch in batch_statuses if batch['status'] in STATUS_IN_QUEUE]
-    if running_batches:
-        if not progress_bar:
-            print(f'Found {len(running_batches)} running batches. Retrieving results for these batches before submitting new ones.')
-        for batch_id in tqdm(running_batches, desc="Retrieving results for running batches", disable=not progress_bar, bar_format='{desc}: {bar} {n}/{total}'):
-            retrieve_batch_results(
-                batch_id=batch_id, 
-                save=True, 
-                if_incomplete='wait', wait_interval=wait_interval,
-                if_failed='ignore'
-            )
-
-    # construct portion info dict to save to file, so we can resume if interrupted
-    if portion_strategy == 'max_tokens':
-        portion_strategy_param = max_tokens
-    elif portion_strategy == 'max_prompts':
-        portion_strategy_param = max_prompts
-    elif portion_strategy == 'split_into_n':
-        portion_strategy_param = split_into_n
-    portion_info = {
-        'metadata': {
-            'parent': jsonl_path, 
-            'strategy': portion_strategy, 'strategy_param': portion_strategy_param, 
-            'encoding': encoding
-        },
-        'batches': {}
-    }
-
-    total_prompts = sum(1 for _ in open(jsonl_path, 'r'))
-    if not progress_bar:
-        print(f'Submitting {total_prompts} prompts to {model} in portions using strategy {portion_strategy} with parameter {portion_strategy_param}.')
-    with tqdm(total=total_prompts, desc=f"Submitting prompts to {model} and awaiting results", disable=not progress_bar, bar_format='{desc}: {bar} {n}/{total}') as pbar:
-        for portion in jsonl_portions(
-            jsonl_path=jsonl_path, 
-            strategy = portion_strategy, max_tokens=max_tokens, max_prompts=max_prompts, split_into_n=split_into_n, 
-            encoding_name=encoding,
-            #save = True, overwrite=overwrite
-        ):
-            batch_id = submit_openai_batch(
-                jsonl=portion.portion,
-                save_dir=save_dir,
-            )
-            portion_info['batches'][batch_id] = {
-                'start_index': portion.start_index, 'end_index': portion.end_index,
-                'token_count': portion.token_count, 'prompt_count': len(portion.portion),
-                'completed': False, 'status': 'submitted'
-            }
-            # write the portion info to file after each batch submission, so we can resume if interrupted
-            with open(info_path, 'w') as f:
-                json.dump(portion_info, f, indent=4)
-
-            # retrieve before submitting another batch - assuming we're maximising our enqueued token limits, so need to wait for the batch to complete before submitting another
-            batch_res = retrieve_batch_results(
-                batch_id=batch_id, 
-                save=True, 
-                if_incomplete='wait',  # wait for batch to complete before submitting another
-                if_failed='ignore',
-                wait_interval=wait_interval
-            )
-            if batch_res is None:
-                # batch failed
-                portion_info['batches'][batch_id]['completed'] = False
-                portion_info['batches'][batch_id]['status'] = 'failed'
-            else:
-                portion_info['batches'][batch_id]['completed'] = True
-                portion_info['batches'][batch_id]['status'] = 'completed'
-            with open(info_path, 'w') as f:
-                json.dump(portion_info, f, indent=4)
-
-            pbar.update(len(portion.portion))
-
-    with open(info_path, 'w') as f:
-        json.dump(portion_info, f, indent=4)
-    print(f'Batch results processed and retrieved for {len(portion_info["batches"])} batches.')
-
-def stage_retrieve(batch_ids: Iterable[str]|str|None = None, *, 
-                   progress_bar: bool = True, verbose: bool = False):
+def stage_retrieve(jobs: Iterable[Job]|Job|None = None, *,
+                   wait: bool = False,
+                   progress_bar: bool = True, verbose: bool = False) -> list[Job]:
     '''
-    Retrieve the results of the submitted batches, saving the results as json files in the 
-    output directory for the relevant term collection. If batches have not yet completed,
-    the function will print the currrent status of the batch.
+    Retrieve the results of submitted batches, saving them to the output directory. Refreshes and
+    returns the Job objects it retrieved for.
 
     Parameters
     ----------
-    batch_ids : Iterable[str]|str|None
-        The IDs of the batches to retrieve results for. If None (default), will retrieve results 
-        for all batches.
+    jobs : Iterable[Job] | Job | None
+        The jobs to retrieve results for. If None (default), retrieves for every job found under TERMS_DIR.
+    wait : bool
+        Whether to wait for batches that are still in progress. Defaults to False.
     progress_bar : bool
         Whether to display a progress bar. Defaults to True.
     verbose : bool
         Whether to print detailed information about the batch retrieval process. Defaults to False.
-        If progress_bar is True, printing is limited to avoid cluttering the progress bar output.
+
+    Returns
+    -------
+    list[Job]
+        The jobs that were refreshed.
     '''
-    # check all batch results, adding files where needed
-    batch_infos = check_batch_status(batch_ids = batch_ids, on_miss='create')
+    if jobs is None:
+        jobs = Job.list_all()
+    elif isinstance(jobs, Job):
+        jobs = [jobs]
+    else:
+        jobs = list(jobs)
 
-    n_working = 0
-    n_stopped = 0
-    n_stopping = 0
-    n_completed = 0
+    totals = {}
+    for job in tqdm(jobs, disable=not progress_bar, bar_format='{desc}: {bar} {n}/{total}', desc='retrieving job results'):
+        job.refresh(progress_bar=False)
+        retrieved = job.retrieve(wait=wait, progress_bar=False)
+        for status, count in job.n_batch_statuses.items():
+            totals[status] = totals.get(status, 0) + count
+        if verbose and not progress_bar:
+            print(f'{job.id}: status={job.status}, batches={job.n_batch_statuses}, '
+                  f'retrieved={len(retrieved)}, missing={len(job.missing_prompts)}/{job.n_prompts}')
 
-    for batch_info in tqdm(batch_infos, disable = not progress_bar, bar_format='{desc}: {bar} {n}/{total}', desc='retrieving batch statuses'):
-        batch_id = batch_info['id']
-        while True:
-            status = batch_info.get('status')
-            logger_llm.info(f'BATCH CHECKED {batch_id}: {status}. ')
-            if status in STATUS_COMPLETED:
-                n_completed += 1
-                if not progress_bar and verbose:
-                    print(f'batch completed - {batch_id} - status={status}. retrieving results.')
-                retrieve_batch_results(batch_id, save=True, if_incomplete='error', if_failed='ignore', if_output_missing='ignore')
-                break
-            elif status in STATUS_WORKING:
-                n_working += 1
-                if not progress_bar and verbose:
-                    print(f'batch working - {batch_id} - status={status}.')
-                break
-            elif status in STATUS_FAILING:
-                n_stopping += 1
-                logger_llm.error(f'Batch {batch_id} {status}. skipping retrieval.')
-                if not progress_bar and verbose:
-                    print(f'batch stopping - {batch_id} - status={status}. skipping retrieval.')
-                break
-            elif status in STATUS_FAILED:
-                n_stopped += 1
-                logger_llm.error(f'Batch {batch_id} {status}. skipping retrieval.')
-                if not progress_bar and verbose:
-                    print(f'batch stopped - {batch_id} - status={status}. skipping retrieval.')
-                break
-    
     if verbose:
-        print(f'retrieval complete. {n_completed} completed, {n_working} working, {n_stopped} stopped, {n_stopping} stopping / {len(batch_infos)} total.')
-
+        print(f'retrieval complete for {len(jobs)} job(s). batch statuses: {totals}')
+    return jobs

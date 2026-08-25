@@ -62,17 +62,18 @@ def _(pipeline):
 
 @app.cell
 def _(pipeline):
-    pipeline.stage_submit(
-        overwrite=True, 
-        portion_strategy='max_tokens', max_tokens = 750_000, 
+    job = pipeline.stage_submit(
+        overwrite=True,
+        portion_strategy='max_tokens', max_tokens = 750_000,
         progress_bar=False
     )
-    return
+    job
+    return (job,)
 
 
 @app.cell
-def _(pipeline):
-    pipeline.stage_retrieve(progress_bar=True, verbose=True)
+def _(pipeline, job):
+    pipeline.stage_retrieve(job, progress_bar=True, verbose=True)
     return
 
 
@@ -86,12 +87,11 @@ def _(mo):
 
 @app.cell
 def _(pd, prompt):
-
-    jsonl_path = '/Users/hugoneely/Documents/4-work/1-current/PhD/repos/decarbonisation-strategies/data/terms/all-terms/prompts/da751a76a582531ca537f181f2acdab5.jsonl'
+    inspect_job = prompt.Job('da751a76a582531ca537f181f2acdab5')
 
     df = { 'portion_index': [], 'n_prompts': [], 'token_count': [], 'start_index': [], 'end_index': [] }
 
-    for i, portion in enumerate(prompt.jsonl_portions(jsonl_path)):
+    for i, portion in enumerate(prompt.jsonl_portions(inspect_job.prompt_jsonl)):
         df['portion_index'].append(i)
         df['n_prompts'].append(len(portion))
         df['token_count'].append(portion.token_count)
@@ -100,12 +100,12 @@ def _(pd, prompt):
 
     df = pd.DataFrame(df)
     df
-    return (jsonl_path,)
+    return (inspect_job,)
 
 
 @app.cell
-def _(jsonl_path, prompt):
-    prompt.jsonl_stats(jsonl_path)
+def _(inspect_job):
+    inspect_job.stats
     return
 
 
