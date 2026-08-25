@@ -485,7 +485,7 @@ class CompanyCollection:
             raise TypeError(f'companies should be an iterable of Company objects, folder names, or a dict mapping folder_name to full_name. Got {type(companies)} with elements of types {[type(co) for co in companies]}')
         else:
             raise TypeError(f'companies should be an iterable of Company objects, folder names, or a dict mapping folder_name to full_name. Got {type(companies)}')
-        self.companies = sorted(list(companies))
+        self.companies = sorted(list(companies), key=lambda co: co.folder_name)  # sort by folder_name for consistency
         self.folder = COMPANIES_DIR
 
         # sorted, so uuid is not sensitive to order of companies
