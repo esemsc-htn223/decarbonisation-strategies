@@ -460,7 +460,7 @@ class Company:
         return hash(self.folder_name)
 
 class CompanyCollection:
-    def __init__(self, companies: Iterable[Company]|dict[str, str]):
+    def __init__(self, companies: Iterable[Company]|Iterable[str]):
         '''
         A collection of companies. Can be initialized with either an iterable of Company objects, or a 
         dict mapping folder_name to full_name (e.g., {'shell': 'Shell'}). In the latter case, Company objects 
@@ -472,13 +472,24 @@ class CompanyCollection:
             An iterable of Company objects, or a dict mapping folder_name to full_name (e.g., {'shell': 'Shell'}). 
             If a dict is provided, Company objects will be created automatically.
         '''
-        
-        if isinstance(companies, dict):
-            companies = [Company(folder_name=folder_name, full_name=full_name, colour=COMPANY_COLOURS.get(folder_name, None)) for folder_name, full_name in companies.items()]
-        self.companies = list(companies)
+
+        if isinstance(companies, str):
+            companies = [Company.from_folder_name(companies)]
+        elif isinstance(companies, dict):
+            companies = [Company.from_folder_name(folder_name) for folder_name in companies.keys()]
+        elif isinstance(companies, Iterable) and all(isinstance(co, str) for co in companies):
+            companies = [Company.from_folder_name(co) for co in companies]
+        elif isinstance(companies, Iterable) and all(isinstance(co, Company) for co in companies):
+            pass
+        elif isinstance(companies, Iterable):
+            raise TypeError(f'companies should be an iterable of Company objects, folder names, or a dict mapping folder_name to full_name. Got {type(companies)} with elements of types {[type(co) for co in companies]}')
+        else:
+            raise TypeError(f'companies should be an iterable of Company objects, folder names, or a dict mapping folder_name to full_name. Got {type(companies)}')
+        self.companies = sorted(list(companies))
         self.folder = COMPANIES_DIR
 
-        self.uuid = 'cos-' + uuid.uuid5(uuid.NAMESPACE_OID, ''.join([co.folder_name for co in self.companies])).hex
+        # sorted, so uuid is not sensitive to order of companies
+        self.uuid = 'cos-' + uuid.uuid5(uuid.NAMESPACE_OID, ''.join(sorted(co.folder_name for co in self.companies))).hex
 
         logger.debug(f'CREATED CompanyCollection: uuid={self.uuid}, companies={[co.folder_name for co in self.companies]}')
 
@@ -505,7 +516,7 @@ class CompanyCollection:
         return len(self.companies)
     
     def __str__(self):
-        return f'CompanyCollection(uuid="{self.uuid}", companies={[co.folder_name for co in self.companies]})'
+        return f'CompanyCollection(companies={[co.folder_name for co in self.companies]})'
 
     def __repr__(self):
         return self.__str__()
