@@ -114,7 +114,9 @@ class TermCollection:
         if not os.path.exists(self.prompts_folder):
             os.makedirs(self.prompts_folder)
 
-        self.uuid = 'terms-' + uuid.uuid5(uuid.NAMESPACE_OID, ''.join([term.alias + term.regex for term in self.terms])).hex
+        self.uuid = 'terms-' + uuid.uuid5(uuid.NAMESPACE_OID, ''.join(sorted([term.alias + term.regex for term in self.terms]))).hex
+        with open(os.path.join(self.folder, 'uuid.txt'), 'w') as f:
+            f.write(self.uuid)
 
         logger.debug(f'CREATED TermCollection: folder_name={self.folder_name}, uuid={self.uuid}, terms={[term.alias for term in self.terms]}')
 
@@ -131,6 +133,16 @@ class TermCollection:
             terms_data = json.load(f)
         terms = [Term(alias=term_data['alias'], regex=term_data['regex'], colour=term_data['colour'], prompt_alias=term_data.get('prompt_alias')) for term_data in terms_data]
         return cls(terms, fname)
+
+    @classmethod
+    def from_uuid(cls, uuid_str: str):
+        for folder_name in os.listdir(TERMS_DIR):
+            uuid_path = os.path.join(TERMS_DIR, folder_name, 'uuid.txt')
+            if os.path.exists(uuid_path):
+                with open(uuid_path, 'r') as f:
+                    if f.read().strip() == uuid_str:
+                        return cls.from_folder(folder_name)
+        raise ValueError(f'TermCollection with uuid {uuid_str} does not exist')
 
     def __iter__(self):
         return iter(self.terms)
