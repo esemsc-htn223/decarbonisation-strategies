@@ -213,36 +213,39 @@ class Commitment(BaseModel):
     verifiable: bool = Field(description="True if the commitment includes specific, measurable targets. False if the commitment is aspirational or qualitative only.")
 
 class PromptResponse(BaseModel):
+    # Structured decoding emits fields in schema order, so each question's quotes are declared
+    # before its answer: the model gathers its evidence, then scores against it.
+
     # Question 1: "How positive or negative is the overall sentiment towards {term.prompt_alias}?"
-    q1_sentiment: float | None = Field(
-        default=None,
-        description="Question 1: Sentiment towards the technology, on a scale from -1 (totally negative) to 1 (totally positive)",
-        ge=-1.0, le=1.0
-    )
     q1_sentiment_quotes: list[QuoteEvidence] = Field(
         default=[],
-        description="Quotes reflecting sentiment towards the technology and a justification for their inclusion. Given as evidence for the sentiment score given in q1_sentiment."  
+        description="Quotes reflecting sentiment towards the technology and a justification for their inclusion. q1_sentiment must use these quotes to assign a sentiment score."
+    )
+    q1_sentiment: float | None = Field(
+        default=None,
+        description="Question 1: Sentiment towards the technology, on a scale from -1 (totally negative) to 1 (totally positive), based on the quotes given in q1_sentiment_quotes",
+        ge=-1.0, le=1.0
     )
 
     # Question 2: "How mature is {term.prompt_alias} framed to be, in terms of Techonology Readiness Levels?"
-    q2_maturity: int | None = Field(
-        default=None,
-        description="Question 2: The Technology Readiness Level (TRL) of the technology as framed in the extracts, 1-9. Definitions provided in the prompt. Null if insufficient information is available to assign a TRL.",
-        ge=1, le=9
-    )
     q2_maturity_quotes: list[QuoteEvidence] = Field(
         default=[],
-        description="Quotes reflecting the Technology Readiness Level (TRL) of the technology and a justification for their inclusion. Given as evidence for the maturity given in q2_maturity."
+        description="Quotes reflecting the Technology Readiness Level (TRL) of the technology and a justification for their inclusion. q2_maturity must use these quotes to assign a TRL."
+    )
+    q2_maturity: int | None = Field(
+        default=None,
+        description="Question 2: The Technology Readiness Level (TRL) of the technology as framed in the extracts, 1-9, based on the quotes given in q2_maturity_quotes. Definitions provided in the prompt. Null if insufficient information is available to assign a TRL.",
+        ge=1, le=9
     )
 
     # Question 3: "What stage of commercialisation is {term.prompt_alias} at within the company's operations?"
-    q3_stage: Literal["research and development", "pilot", "demonstration", "commercial-deployment", "phasing-out", "unclear"] = Field(
-        default="unclear",
-        description="Question 3: The technology's stage of commercialisation within the company's operations."
-    )
     q3_stage_quotes: list[QuoteEvidence] = Field(
         default=[],
-        description="Quotes reflecting the technology's stage of commercialisation within the company's operations and a justification for their inclusion. Given as evidence for the stage of commercialisation given in q3_stage."
+        description="Quotes reflecting the technology's stage of commercialisation within the company's operations and a justification for their inclusion. q3_stage must use these quotes to assign a stage."
+    )
+    q3_stage: Literal["research and development", "pilot", "demonstration", "commercial-deployment", "phasing-out", "unclear"] = Field(
+        default="unclear",
+        description="Question 3: The technology's stage of commercialisation within the company's operations, based on the quotes given in q3_stage_quotes."
     )
 
     # Question 4: "What commitments does the company make towards {term.prompt_alias}?"
@@ -1397,15 +1400,10 @@ class Job:
         Every custom_id drafted on disk for this job's term collection, across all companies,
         report types and years. Terms that matched no chunk in a report have no prompt file, and
         so are absent.
-
-        TODO: not sensitive to changes in prompt contents. Need to be able to distinguish between:
-        1. Changes to prompt templates
-        2. Different chunking strategies (e.g. overlapping vs non-overlapping, or different chunk sizes)
-        3. Term collection updates (e.g. new terms added, terms removed, or terms modified)
         '''
         if self._expected_cache is None:
             expected = set()
-            for report in co_files(yield_level='Report'):
+            for report in co_files(yield_level='Report', companies=self.companies, report_types=self.report_types):
                 try:
                     paths = report.prompt_paths(self.terms)
                 except ValueError:
