@@ -7,7 +7,7 @@ from dataclasses import dataclass
 import uuid
 import json
 
-from decarb.util import TERMS_DIR, logger
+from decarb.util import TERMS_DIR, OUT_DIR, logger
 
 @dataclass
 class Term:
@@ -88,27 +88,45 @@ class TermCollection:
             except AttributeError:
                 term.copy().set_collection(self)
 
-        self.terms = list(terms)
+        self.terms = sorted(list(terms), key = lambda t: t.alias.lower())
         self.aliases = [term.alias for term in self.terms]
         self.regexes = [term.regex for term in self.terms]
         self.folder_name = folder_name.replace(' ', '-').lower()
+        self.colours = [term.colour for term in self.terms]
 
         self.folder = os.path.join(TERMS_DIR, self.folder_name)
         self.json_path = os.path.join(self.folder, 'terms.json')
         self.batches_folder = os.path.join(self.folder, 'batches')
         self.prompts_folder = os.path.join(self.folder, 'prompts')
 
+        self.out_folder = os.path.join(OUT_DIR, self.folder_name)
+
         # set up folder structure
         if not os.path.exists(self.folder):
             os.makedirs(self.folder)
-        if not os.path.exists(self.json_path):
+        if not os.path.exists(self.out_folder):
+            os.makedirs(self.out_folder)
+        terms_data = [{
+            'alias': term.alias,
+            'prompt_fname': term.prompt_fname,
+            'regex': term.regex,
+            'colour': term.colour,
+            'prompt_alias': term.prompt_alias} for term in self.terms]
+
+        # determine if changes have been made to the terms, and if so, rewrite the json file and warn the user
+        existing = None
+        if os.path.exists(self.json_path):
+            with open(self.json_path, 'r') as f:
+                existing = json.load(f)
+        if existing != terms_data:
+            if existing is not None:
+                logger.warning(
+                    f'TERMS CHANGED: "{self.folder_name}" definition differs from {self.json_path}. '
+                    'Rewriting. Any search results, prompts or batches already stored under this '
+                    'folder were produced with the previous terms.'
+                )
             with open(self.json_path, 'w') as f:
-                json.dump([{
-                    'alias': term.alias, 
-                    'prompt_fname': term.prompt_fname, 
-                    'regex': term.regex, 
-                    'colour': term.colour, 
-                    'prompt_alias': term.prompt_alias} for term in self.terms], f, indent=4)
+                json.dump(terms_data, f, indent=4)
         if not os.path.exists(self.batches_folder):
             os.makedirs(self.batches_folder)
         if not os.path.exists(self.prompts_folder):
@@ -535,14 +553,11 @@ TERMS_ALL = TermCollection(
           Term(alias = 'EVs', regex = EVS_REGEX, 
                colour = 'lightgrey',
                prompt_alias='electric vehicles'),
-          Term(alias = 'Nature', regex = NATURE_REGEX, 
+          Term(alias = 'Nature', regex = NATURE_REGEX,
                colour = 'darkgreen',
                prompt_alias='nature-based solutions'),
-          Term(alias = 'Efficiency', regex = EFFICIENCY_REGEX, 
-               colour = 'fuchsia',
-               prompt_alias='energy efficiency'),
 
-          Term(alias = 'Nuclear (conventional)', regex = NUCLEAR_CONVENTIONAL_REGEX, 
+          Term(alias = 'Nuclear (conventional)', regex = NUCLEAR_CONVENTIONAL_REGEX,
                colour = 'tab:olive',
                prompt_alias='conventional nuclear power'),
           Term(alias = 'Nuclear (SMR)', regex = NUCLEAR_SMR_REGEX, 
@@ -588,9 +603,6 @@ TERMS_SUMMARY = TermCollection(
         Term(alias = 'Nature', regex = NATURE_REGEX, 
              colour = 'darkgreen',
              prompt_alias='nature-based solutions'),
-        Term(alias = 'Efficiency', regex = EFFICIENCY_REGEX, 
-             colour = 'fuchsia',
-             prompt_alias='energy efficiency'),
 
         Term(alias = 'Nuclear', regex = f'{NUCLEAR_CONVENTIONAL_REGEX}|{NUCLEAR_SMR_REGEX}', 
              colour = 'tab:olive',
@@ -607,39 +619,59 @@ TERMS_SIMPLE = TermCollection(
         Term(alias = 'Solar', regex = r'solar|\bPV\b|\bP\.V\.\b|photovoltaic|\bCSP\b|\bC\.S\.P\.\b', 
              colour = 'gold',
              prompt_alias='solar power'),
-        Term(alias = 'Wind', regex = r'\bwind\b', 
+        Term(alias = 'Wind', regex = r'\bwinds?\b(?!\s+(down|up))',
              colour = 'powderblue',
              prompt_alias='wind power'),
         Term(alias = 'Hydrogen', regex = r'hydrogen|h2', 
              colour = 'turquoise',
              prompt_alias='hydrogen'),
-        Term(alias = 'CCS', regex = r'(carbon\s+capture(\s+and\s+(storage|sequestration|utili[sz]ation))|ccs)', 
+        Term(alias = 'CCS', regex = r'carbon\s+capture|\bccs\b|\bccus\b|\bbeccs\b|carbon\s+sequestration|co2\s+(capture|storage|sequestration|injection)|direct\s+air\s+capture|\bDAC\b',
              colour = 'dimgray',
              prompt_alias='carbon capture and storage'),
-        Term(alias = 'Biofuel', regex = r'bio-?(fuel|diesel|ethanol|methane|gas)|renewable\s+natural\s+gas|\bRNG\b|\bR\.N\.G\.\b', 
+        Term(alias = 'Biofuel', regex = r'bio-?(fuel|diesel|ethanol|methane|gas|mass)|renewable\s+(natural\s+gas|diesel)|\bRNG\b|\bR\.N\.G\.\b|\bSAF\b|sustainable\s+aviation\s+fuel|hydrotreated\s+vegetable\s+oil|\bHVO\b',
              colour = 'tab:brown',
              prompt_alias='biofuel'),
         Term(alias = 'Geothermal', regex = r'geothermal|ground\.source|ground\s+source', 
              colour = 'tab:red',
              prompt_alias='geothermal energy'),
-        Term(alias = 'Tidal', regex = r'tidal|wave', 
+        Term(alias = 'Tidal', regex = r'tidal|wave\s+(energy|power|farm|converter|device|project)|ocean\s+energy|\bOTEC\b',
              colour = 'steelblue',
              prompt_alias='tidal energy'),
-        Term(alias = 'Storage', regex = r'\b(batter(y|ies)|BESS|B\.E\.S\.S\.|compressed\s+air|CAES|C\.A\.E\.S\.)\b', 
+        Term(alias = 'Storage', regex = r'batter(y|ies)\s+(storage|system|technolog|pack|cell|manufactur|plant|project|capacity|chemistr)|(advanced|lithium(.ion)?|solid.state|flow|redox|vanadium|sodium.ion|nickel.metal|nimh|lead.acid)\s+batter(y|ies)|energy\s+storage|\b(BESS|B\.E\.S\.S\.|CAES|C\.A\.E\.S\.|LDES)\b|compressed\s+air|pumped.hydro|grid.scale\s+storage',
              colour = 'pink',
              prompt_alias='energy storage'),
-        Term(alias = 'EVs', regex = r'\b(electric\s+vehicle|EV|E\.V\.)s?\b', 
+        Term(alias = 'EVs', regex = r'\b(electric\s+vehicle|EV|E\.V\.|BEV|PHEV)s?\b|plug.?in\s+hybrid|charg(ing|e)\s+(point|station|network|infrastructure|hub)|vehicle.to.grid|\bV2G\b',
              colour = 'lightgrey',
              prompt_alias='electric vehicles'),
-        Term(alias = 'Nature', regex = r'\b(nature.based|nature\s+based|(re|a)forestation)\b', 
+        Term(alias = 'Nature', regex = r'\b(nature.based|nature\s+based|(re|af)forestation)\b|carbon\s+(credit|offset)|natural\s+climate\s+solution|voluntary\s+carbon\s+market|\bVCM\b|REDD\+?|blue\s+carbon|forest\s+carbon',
              colour = 'darkgreen',
              prompt_alias='nature-based solutions'),
-        Term(alias = 'Nuclear', regex = r'nuclear\s+(power|plants?|energy|reactor|fleet|fission)|(small|advanced)\s+modular\s+reactor', 
+        Term(alias = 'Nuclear', regex = r'nuclear\s+(power|plants?|energy|reactor|fleet|fission|programme|program|capacity|technology)|(small|advanced)\s+modular\s+reactor',
              colour = 'tab:olive',
              prompt_alias='nuclear energy'),
-        Term(alias = 'Fusion', regex = r'nuclear\s+fusion|fusion\s+(energy|power|reactor|plant|research)', 
+        Term(alias = 'Fusion', regex = r'nuclear\s+fusion|fusion\s+(energy|power|reactor|plant|research)',
              colour = 'tab:orange',
-             prompt_alias='nuclear fusion')
+             prompt_alias='nuclear fusion'),
+
+        # Fossil fuel technologies, for comparison against the decarbonisation terms above.
+        Term(alias = 'Coal', regex = r'\bcoal\b|lignite|anthracite|coal.fired|thermal\s+coal|metallurgical\s+coal|coking\s+coal|coal.to.(liquid|gas)|\bCTL\b',
+             colour = 'black',
+             prompt_alias='coal'),
+        Term(alias = 'Oil', regex = r'crude\s+oil|\bcrude\b|petroleum\s+(product|refin|liquid)|oil\s+(production|field|reserves|price|demand|supply|output|well|discover)|\bbbls?\b|barrels?\s+of\s+oil(?!\s+equivalent)',
+             colour = 'saddlebrown',
+             prompt_alias='crude oil'),
+        Term(alias = 'Natural gas', regex = r'natural\s+gas|\bLNG\b|\bCNG\b|\bNGLs?\b|gas.fired|\bCCGT\b|shale\s+gas|associated\s+gas|gas\s+(production|field|reserves|pipeline|processing|liquefaction|market|demand|supply|price|well)',
+             colour = 'indianred',
+             prompt_alias='natural gas'),
+        Term(alias = 'Refining', regex = r'refin(ery|eries|ing)|\bcrackers?\b|hydrocracker|catalytic\s+crack|distillation\s+unit|throughput\s+capacity',
+             colour = 'darkslateblue',
+             prompt_alias='oil refining'),
+        Term(alias = 'Petrochemicals', regex = r'petrochemical|\bolefins?\b|\baromatics?\b|polyethylene|polypropylene|\bPTA\b|ethylene|propylene|\bmonomer',
+             colour = 'rebeccapurple',
+             prompt_alias='petrochemicals'),
+        Term(alias = 'Unconventional', regex = r'oil\s+sands|\bshale\b|tight\s+oil|tight\s+gas|fracking|hydraulic\s+fractur|\bbitumen\b|heavy\s+oil|coalbed\s+methane|\bCBM\b|synthetic\s+crude',
+             colour = 'darkkhaki',
+             prompt_alias='unconventional oil and gas')
     ],
     folder_name = 'simple-terms'
 )
