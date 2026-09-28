@@ -14,7 +14,8 @@ COMPANY_ALIASES = {
         'bp': 'BP',
         'exxon': 'ExxonMobil',
         'chevron': 'Chevron',
-        'total': 'TotalEnergies'
+        'total': 'TotalEnergies',
+        'eni': 'Eni'
     }
 
 COMPANY_COLOURS = {
@@ -22,7 +23,8 @@ COMPANY_COLOURS = {
     'bp': "#3ABE5B",
     'exxon': '#FF0000',
     'chevron': "#9BDAFF",
-    'total': "#E69AFF"
+    'total': "#E69AFF",
+    'eni': "#FFA500"
 }
 
 class Report:
@@ -56,8 +58,11 @@ class Report:
         for entry in file_mdata:
             if file_mdata[entry] is None:
                 raise AttributeError(f'Could not extract {entry} from file path: {path}')
-            else:
-                setattr(self, entry, file_mdata[entry])
+            
+        self.company = file_mdata['company']
+        self.report_type = file_mdata['report_type']
+        self.report_name = file_mdata['report_name']
+        self.year = file_mdata['year']
         
         # identify base folder
         self.dir = os.path.join(COMPANIES_DIR, self.company.folder_name, self.report_type, self.report_name)
@@ -74,6 +79,16 @@ class Report:
             raise FileNotFoundError(f'.pdf not found for report {self.report_name} @ {self._pdf_path}')
 
         self._chunks_dir = os.path.join(self.dir, 'chunks')
+
+    @property
+    def type(self):
+        '''alias for report_type'''
+        return self.report_type
+
+    @property
+    def folder(self):
+        '''alias for dir'''
+        return self.dir
 
     @classmethod
     def from_metadata(cls, company: Union['Company', str], report_type: str, report_year: str):
@@ -204,6 +219,18 @@ class Report:
         '''
         return [open(chunk_file).read() for chunk_file in self.chunk_paths]
 
+    def chunks_iter(self) -> Iterable[str]:
+        '''
+        Iterate over the markdown content of all chunk files in the given directory, in order of chunk index.
+
+        Yields
+        ------
+        str
+            The markdown content of each chunk file, in order of chunk index.
+        '''
+        for chunk_file in self.chunk_paths:
+            yield open(chunk_file).read()
+
     def chunk(self, index: int) -> str:
         '''
         Get the markdown content of a specific chunk file, identified by its index.
@@ -238,7 +265,7 @@ class Report:
         is_term_folder = lambda f: os.path.isdir(os.path.join(self.dir, f)) and f != 'chunks' and not f.startswith('.')
         return [f for f in os.listdir(self.dir) if is_term_folder(f)]
 
-    def _term_dir(self, terms: TermCollection | str):
+    def _term_dir(self, terms: TermCollection | str) -> str:
         '''The expected location of the term directory for this report and term collection. Does not check whether the directory actually exists.'''
         if not isinstance(terms, str):
             try:
@@ -247,24 +274,24 @@ class Report:
                 raise ValueError(f'terms should be either a string or a TermCollection object. Got {type(terms)}')
         return os.path.join(self.dir, terms) 
     
-    def term_dir(self, terms: TermCollection | str):
+    def term_dir(self, terms: TermCollection | str) -> str | None:
         '''Get the path to the term directory for this report and term collection, if it exists. Otherwise, return None.'''
         term_folder_path = self._term_dir(terms)
         return term_folder_path if os.path.exists(term_folder_path) else None
     
     
-    def _search_results_path(self, terms: TermCollection | str):
+    def _search_results_path(self, terms: TermCollection | str) -> str:
         '''The expected location of the search results file for this report and term collection. Does not check whether the file actually exists.'''
         return os.path.join(self._term_dir(terms), 'search-results.json')
 
-    def search_results_path(self, terms: TermCollection | str):
+    def search_results_path(self, terms: TermCollection | str) -> str | None:
         '''Get the path to the search results file for this report and term collection, if it exists. Otherwise, return None.'''
         search_results_path = self._search_results_path(terms)
         if not os.path.exists(search_results_path):
             return None
         return search_results_path
     
-    def search_results(self, terms: TermCollection | str):
+    def search_results(self, terms: TermCollection | str) -> dict|None:
         '''Get the content of the search results file for this report and term collection, if it exists. Otherwise, return None.'''
         search_results_path = self.search_results_path(terms)
         if search_results_path is None:
@@ -272,11 +299,11 @@ class Report:
         with open(search_results_path, 'r') as f:
             return json.load(f)
     
-    def _prompts_dir(self, terms: TermCollection | str):
+    def _prompts_dir(self, terms: TermCollection | str) -> str:
         '''The expected location of the prompts directory for this report and term collection. Does not check whether the directory actually exists.'''
         return os.path.join(self._term_dir(terms), 'prompts')
 
-    def prompts_dir(self, terms: TermCollection | str):
+    def prompts_dir(self, terms: TermCollection | str) -> str | None:
         '''Get the path to the prompts directory for this report and term collection, if it exists. Otherwise, return None.'''
         prompts_dir = self._prompts_dir(terms)
         if not os.path.exists(prompts_dir):
@@ -294,7 +321,7 @@ class Report:
         return [os.path.join(prompts_dir, f) for f in prompt_files]
     
 
-    def _prompt_path(self, terms: TermCollection | str, term: Term | str):
+    def _prompt_path(self, terms: TermCollection | str, term: Term | str) -> str:
         '''The expected location of the prompt file for this report, term collection, and term alias. Does not check whether the file actually exists.'''
         if not isinstance(term, str):
             term = term.prompt_fname
@@ -302,25 +329,25 @@ class Report:
             term = term + '.txt'
         return os.path.join(self._prompts_dir(terms), f'{term}')
 
-    def prompt_path(self, terms: TermCollection | str, term: Term | str):
+    def prompt_path(self, terms: TermCollection | str, term: Term | str) -> str | None:
         '''Get the path to the prompt file for this report, term collection, and term alias, if it exists. Otherwise, return None.'''
         prompt_path = self._prompt_path(terms, term)
         if not os.path.exists(prompt_path):
             return None
         return prompt_path
     
-    def prompt(self, terms: TermCollection | str, term: Term | str):
+    def prompt(self, terms: TermCollection | str, term: Term | str) -> str | None:
         '''Get the content of the prompt file for this report, term collection, and term alias, if it exists. Otherwise, return None.'''
         prompt_path = self.prompt_path(terms, term)
         if prompt_path is None:
             return None
         return open(prompt_path).read()
     
-    def _prompts_jsonl_path(self, terms: TermCollection | str):
+    def _prompts_jsonl_path(self, terms: TermCollection | str) -> str:
         '''The expected location of the prompts jsonl file for this report and term collection. Does not check whether the file actually exists.'''
         return os.path.join(self._prompts_dir(terms), 'prompts.jsonl')
     
-    def prompts_jsonl_path(self, terms: TermCollection | str):
+    def prompts_jsonl_path(self, terms: TermCollection | str) -> str | None:
         '''Get the path to the prompts jsonl file for this report and term collection, if it exists. Otherwise, return None.'''
         prompts_jsonl_path = self._prompts_jsonl_path(terms)
         if not os.path.exists(prompts_jsonl_path):
@@ -502,7 +529,7 @@ class CompanyCollection:
             return CompanyCollection(self.companies[key])
         elif isinstance(key, str):
             try:
-                return next(co for co in self.companies if co.folder_name == key or co.full_name.lower() == key)
+                return next(co for co in self.companies if co.folder_name == key or co.full_name.lower() == key or co.full_name == key)
             except StopIteration:
                 raise KeyError(f'Company with folder_name or full_name "{key}" not found in collection.')
         elif isinstance(key, Iterable):
@@ -697,6 +724,9 @@ def file_metadata(file_path:str) -> dict[str, str|Company|None]:
     rp = flist[2] if len(flist) > 2 else None
     if rp:
         ry = rp.split('-')[-1] if '-' in rp else None
+        if ry:
+            if not ry.isdigit() or len(ry) != 4:
+                ry = None
     if co is None and rt is None and rp is None and ry is None:
         raise ValueError(f'Could not extract company, report type, report name, or report year from file path: {file_path}')
     
