@@ -19,9 +19,11 @@ __all__ = [
 
 def regex_mentions(
     df: pd.DataFrame, 
-    *, 
+    *,
+    company: str|None = None, report_type: str|None = None,
     ax: plt.Axes | None = None, figsize: tuple[float]|tuple[int]|None = None,
-    plot_n: str|None = 'words', normed_by: str|None = 'words',
+    plot_n: Literal['words', 'chunks', 'pages']|None = 'words', 
+    normed_by: Literal['words', 'chunks', 'pages']|None = 'words',
     terms: TermCollection = TERMS_ALL
 ):
     '''
@@ -36,10 +38,10 @@ def regex_mentions(
         Axes to plot on. If None, a new figure and axes will be created.
     figsize : tuple of float, optional
         Size of the figure to create if `ax` is None. Ignored if `ax` is not None.
-    plot_n : str, optional
+    plot_n : Literal['words', 'chunks', 'pages']|None, optional
         Column name in `df` to plot as a secondary y-axis. If None, no secondary y-axis will be plotted. Default is 'words'.
-    normed_by : str, optional
-        Column name in `df` to use for normalizing the term counts. If None, no normalization will be applied. Default is 'words'.
+    normed_by : Literal['words', 'chunks', 'pages']|None, optional
+        Column name in `df` used to normalise the counts of regex matches, used to label the y axis. Default is 'words'.
     terms : TermCollection, optional
         Collection of terms to plot. Default is `TERMS_ALL`.
 
@@ -51,22 +53,34 @@ def regex_mentions(
         The secondary axes for the `plot_n` column, if `plot_n` is not None. Otherwise, returns None.
     '''
 
+    df_wkg = df.copy()
+
+    if report_type is not None:
+        df_wkg = df_wkg[df_wkg.index.get_level_values('report_type') == report_type]
+    elif df_wkg.index.get_level_values('report_type').nunique() > 1:
+        raise ValueError('report_type must be specified if df contains multiple report types.')
+
+    if company is not None:
+        df_wkg = df_wkg[df_wkg.index.get_level_values('company') == company]
+    elif df_wkg.index.get_level_values('company').nunique() > 1:
+        raise ValueError('company must be specified if df contains multiple companies.')
+
     if ax is None: _, ax = plt.subplots(figsize=figsize)
 
     for term in terms:
-        ax.plot(df.index, df[term.alias], marker = term.marker, linestyle = term.dash_ls if term.dash else None, color = term.colour, gapcolor=term.edgecolour)
+        ax.plot(df_wkg.index.get_level_values('year').astype(int), df_wkg[term.alias], marker = term.marker, linestyle = term.dash_ls if term.dash else None, color = term.colour, gapcolor=term.edgecolour)
 
     if normed_by is not None:
         ax.set_ylabel(f'Term count/No. {normed_by}')
     else:
         ax.set_ylabel('Term count')
-    ax.set_xticks(df.index)
-    ax.set_xticklabels(df.index, rotation = 45)
+    ax.set_xticks(df_wkg.index.get_level_values('year').astype(int))
+    ax.set_xticklabels(df_wkg.index.get_level_values('year').astype(int), rotation = 45)
 
     if not plot_n.startswith('n_'): plot_n = 'n_' + plot_n
-    if plot_n in df:
+    if plot_n in df_wkg.columns:
         ax_n = ax.twinx()
-        df[plot_n].plot(linestyle = 'None', marker = '2', color = 'k', alpha = 0.9, ax = ax_n)
+        df_wkg[plot_n].plot(linestyle = 'None', marker = '2', color = 'k', alpha = 0.9, ax = ax_n)
         ax_n.set_ylabel(f'No. {plot_n.replace("n_", "")}')
         return ax, ax_n
     return ax
@@ -74,6 +88,7 @@ def regex_mentions(
 def regex_rankings(
         df: pd.DataFrame,
         *,
+        company: str|None = None, report_type: str|None = None,
         ax: plt.Axes | None = None,
         figsize: tuple[float]|tuple[int]|None = None,
         terms: TermCollection = TERMS_ALL,
@@ -88,6 +103,12 @@ def regex_rankings(
     df : pd.DataFrame
         DataFrame containing the data to plot. Must have a datetime index and columns for each term
         in `terms`, as well as a column for the total number of words (or other unit).
+    company : str, optional
+        The company to plot. If None, df should only contain one company. 
+        If df contains multiple companies, a ValueError will be raised.
+    report_type : str, optional
+        The report type to plot. If None, df should only contain one report type. 
+        If df contains multiple report types, a ValueError will be raised.
     ax : plt.Axes, optional
         Axes to plot on. If None, a new figure and axes will be created.
     figsize : tuple of float, optional
@@ -105,10 +126,25 @@ def regex_rankings(
     -------
     ax : plt.Axes
         The axes on which the plot was created.
+
+    Raises
+    ------
+    ValueError
+        If `company` is None and df contains multiple companies, or if `report_type` is None and df contains multiple report types.
     '''
     if ax is None: _, ax = plt.subplots(figsize=figsize)
 
-    df_ranked = df.loc[:, [term.alias for term in terms]]
+    indexer = pd.Series([True] * len(df), index=df.index)
+    if company is not None:
+        indexer = df.index.get_level_values('company') == company
+    elif df.index.get_level_values('company').nunique() > 1:
+        raise ValueError('company must be specified if df contains multiple companies.')
+    if report_type is not None:
+        indexer = indexer & (df.index.get_level_values('report_type') == report_type)
+    elif df.index.get_level_values('report_type').nunique() > 1:
+        raise ValueError('report_type must be specified if df contains multiple report types.')
+
+    df_ranked = df.loc[indexer, [term.alias for term in terms]]
     if zero_fill.lower() == 'nan':
         df_ranked = df_ranked.replace(0, np.nan)
     elif zero_fill.lower() == 'min':
@@ -119,37 +155,38 @@ def regex_rankings(
 
     for term in terms:
         if lines:
-            ax.plot(df_ranked.index, df_ranked[term.alias], 
+            ax.plot(df_ranked.index.get_level_values('year').astype(int), df_ranked[term.alias], 
                        marker = None, linestyle = term.dash_ls if term.dash else None, 
                        color = term.colour, gapcolor=term.edgecolour, zorder = 1)
-        ax.scatter(df_ranked.index, df_ranked[term.alias], 
+        ax.scatter(df_ranked.index.get_level_values('year').astype(int), df_ranked[term.alias], 
                         marker = term.marker, linestyle = 'None', 
                         color = term.colour, edgecolor=term.edgecolour, hatch=term.hatch)
 
     ax.invert_yaxis()
     ax.set_ylabel('Rank')
-    ax.set_xticks(df_ranked.index)
-    ax.set_xticklabels(df_ranked.index, rotation = 45)
+    ax.set_xticks(df_ranked.index.get_level_values('year').astype(int))
+    ax.set_xticklabels(df_ranked.index.get_level_values('year').astype(int), rotation = 45)
 
     return ax
 
 def regex_comparison(
-    dfs: dict[str, pd.DataFrame], 
+    df: pd.DataFrame, 
     terms: TermCollection = TERMS_ALL, *,
     cos: CompanyCollection = COMPANIES_ALL, 
     rank: bool = False,
     rank_zero_fill: Literal['nan', 'min'] = 'nan', rank_lines: bool = True,
-    plot_n: str|None = 'words', normed_by: str|None = 'words',
+    plot_n: Literal['words', 'chunks', 'pages']|None = 'words', 
+    normed_by: Literal['words', 'chunks', 'pages']|None = 'words',
     suptitle: str|None = None
 ):
     '''
     Create plots for each company in `cos` showing either the number of mentions of each term in `terms` 
-    over time, or the rankings of each term over time, using the data in `dfs` output from `regex_pipeline`.
+    or the rankings of each term over time, using the data in `df` output from `regex_pipeline`.
 
     Parameters
     ----------
-    dfs : dict[str, pd.DataFrame]
-        Dictionary of DataFrames containing the data to plot, with keys corresponding to company folder names.
+    df : pd.DataFrame
+        The DataFrame containing the data to plot.
     terms : TermCollection, optional
         Collection of terms to plot. Default is `TERMS_ALL`.
     cos : CompanyCollection, optional
@@ -161,10 +198,10 @@ def regex_comparison(
         If 'min', zero values will be replaced with the minimum rank + 1 among the non-zero values. Ignored if `rank` is False. Default is 'nan'.
     rank_lines : bool, optional
         Whether to plot lines connecting the points for each term when plotting rankings. Ignored if `rank` is False. Default is True.
-    plot_n : str, optional
-        Column name in `dfs` to plot as a secondary y-axis when plotting mentions. If None, no secondary y-axis will be plotted. Default is 'words'.
-    normed_by : str, optional
-        Column name in `dfs` to use for normalizing the term counts when plotting mentions. If None, no normalization will be applied. Default is 'words'.
+    plot_n : Literal['words', 'chunks', 'pages']|None, optional
+        Column name in `df` to plot as a secondary y-axis when plotting mentions. If None, no secondary y-axis will be plotted. Default is 'words'.
+    normed_by : Literal['words', 'chunks', 'pages']|None, optional
+        What the data in `df` has been normalised by. Used to label the y-axis. Default is 'words'.
     suptitle : str, optional
         Suptitle for the entire figure. Default is None.
 
@@ -176,8 +213,9 @@ def regex_comparison(
         Array of axes containing the individual plots for each company.
     '''
 
-    years_an = sorted({int(y) for co in cos for y in dfs[co.folder_name + '-an'].index})
-    years_sr = sorted({int(y) for co in cos for y in dfs[co.folder_name + '-sr'].index})
+    df = df.sort_index(level=['company', 'report_type', 'year']).copy()    
+    years_an = sorted({int(y) for co in cos for y in df.loc[df.index.get_level_values('report_type') == 'annual-report'].index.get_level_values('year')})
+    years_sr = sorted({int(y) for co in cos for y in df.loc[df.index.get_level_values('report_type') == 'sustainability-report'].index.get_level_values('year')})
 
     xmin_an, xmax_an = years_an[0], years_an[-1]
     xmin_sr, xmax_sr = years_sr[0], years_sr[-1]
@@ -190,19 +228,33 @@ def regex_comparison(
         axs1 = axs[i][0]
         axs2 = axs[i][1]
         if rank:
-            regex_plot_rankings(dfs[co.folder_name + '-an'], ax = axs1, terms = terms, lines=rank_lines, zero_fill=rank_zero_fill)
-            regex_plot_rankings(dfs[co.folder_name + '-sr'], ax = axs2, terms = terms, lines=rank_lines, zero_fill=rank_zero_fill)
+            regex_rankings(
+                df, company=co.folder_name, report_type='annual-report', 
+                ax=axs1, terms=terms, lines=rank_lines, zero_fill=rank_zero_fill
+            )
+            regex_rankings(
+                df, company=co.folder_name, report_type='sustainability-report', 
+                ax = axs2, terms = terms, lines=rank_lines, zero_fill=rank_zero_fill
+            )
         else:
-            regex_plot_mentions(dfs[co.folder_name + '-an'], ax = axs1, terms = terms, plot_n=plot_n, normed_by=normed_by)
-            regex_plot_mentions(dfs[co.folder_name + '-sr'], ax = axs2, terms = terms, plot_n=plot_n, normed_by=normed_by)
+            regex_mentions(
+                df, company=co.folder_name, report_type='annual-report', 
+                ax=axs1, terms=terms, plot_n=plot_n, normed_by=normed_by
+            )
+            regex_mentions(
+                df, company=co.folder_name, report_type='sustainability-report', 
+                ax=axs2, terms=terms, plot_n=plot_n, normed_by=normed_by
+            )
 
         axs1.set_xlim(xmin_an, xmax_an)
         axs2.set_xlim(xmin_sr, xmax_sr)
 
-        if xmin_an < dfs[co.folder_name + '-an'].index.min(): axs1.axvspan(xmin_an, dfs[co.folder_name + '-an'].index.min(), color='lightgrey', alpha=0.5, zorder=-1)
-        if xmax_an > dfs[co.folder_name + '-an'].index.max(): axs1.axvspan(dfs[co.folder_name + '-an'].index.max(), xmax_an, color='lightgrey', alpha=0.5, zorder=-1)
-        if xmin_sr < dfs[co.folder_name + '-sr'].index.min(): axs2.axvspan(xmin_sr, dfs[co.folder_name + '-sr'].index.min(), color='lightgrey', alpha=0.5, zorder=-1)
-        if xmax_sr > dfs[co.folder_name + '-sr'].index.max(): axs2.axvspan(dfs[co.folder_name + '-sr'].index.max(), xmax_sr, color='lightgrey', alpha=0.5, zorder=-1)
+        co_an_yrs = df.loc[(df.index.get_level_values('company') == co.folder_name) & (df.index.get_level_values('report_type') == 'annual-report')].index.get_level_values('year')
+        co_sr_yrs = df.loc[(df.index.get_level_values('company') == co.folder_name) & (df.index.get_level_values('report_type') == 'sustainability-report')].index.get_level_values('year')
+        if xmin_an < co_an_yrs.min(): axs1.axvspan(xmin_an, co_an_yrs.min(), color='lightgrey', alpha=0.5, zorder=-1)
+        if xmax_an > co_an_yrs.max(): axs1.axvspan(co_an_yrs.max(), xmax_an, color='lightgrey', alpha=0.5, zorder=-1)
+        if xmin_sr < co_sr_yrs.min(): axs2.axvspan(xmin_sr, co_sr_yrs.min(), color='lightgrey', alpha=0.5, zorder=-1)
+        if xmax_sr > co_sr_yrs.max(): axs2.axvspan(co_sr_yrs.max(), xmax_sr, color='lightgrey', alpha=0.5, zorder=-1)
 
         if i == 0:
             axs1.set_title('Annual Reports')
@@ -235,7 +287,7 @@ def regex_comparison(
         alignment = 'center'
     )
     extra_labels = [mpl.patches.Patch(color='lightgrey', alpha=0.5, label='No data')]
-    if plot_n and 'n_' + plot_n in dfs[cos[0].folder_name + '-an'] and not rank:
+    if plot_n and 'n_' + plot_n in df and not rank:
         extra_labels.append(plt.Line2D([0], [0], color = 'k', marker = '2', linestyle = 'None', label = f'Total {plot_n}'))
     fig.legend(
         handles = extra_labels,
@@ -646,7 +698,9 @@ def llm_terms_heatmap(
                 df_question = df_question.astype(float)
             im = axs[i, j].imshow(
                 df_question.values,
-                cmap=cmaps[question]
+                cmap=cmaps[question],
+                vmin = 1 if question in ('q2_maturity', 'q3_stage') else -1,
+                vmax = 9 if question == 'q2_maturity' else 5 if question == 'q3_stage' else 1
             )
             if i == 0:
                 axs[i, j].set_title(f"{REPORT_TYPES_LONG.get(rt, rt).title()}s", fontweight='bold', fontfamily='monospace')

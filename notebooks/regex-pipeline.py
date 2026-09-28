@@ -1,6 +1,6 @@
 import marimo
 
-__generated_with = "0.23.16"
+__generated_with = "0.24.0"
 app = marimo.App()
 
 
@@ -17,52 +17,66 @@ def _():
     import marimo as mo
     import matplotlib.pyplot as plt
 
-    from decarb import (
-        TERMS_ALL, TERMS_SUMMARY, TERMS_SIMPLE,
-        COMPANIES_ALL
+    from decarb.terms import (
+        TERMS_ALL, TERMS_SUMMARY, TERMS_SIMPLE
     )
+    from decarb.companies import COMPANIES_ALL
     from decarb.regex import regex_pipeline
-    from decarb.output.plot import regex_plot_comparison
+    from decarb.output.plot import regex_comparison
+    from decarb.util import OUT_DIR
 
     return (
         COMPANIES_ALL,
-        TERMS_ALL,
+        OUT_DIR,
         TERMS_SIMPLE,
-        TERMS_SUMMARY,
         mo,
         plt,
+        regex_comparison,
         regex_pipeline,
-        regex_plot_comparison,
     )
 
 
 @app.cell
-def _(COMPANIES_ALL, TERMS_ALL, TERMS_SIMPLE, TERMS_SUMMARY, regex_pipeline):
-    out = regex_pipeline(TERMS_ALL, COMPANIES_ALL, reprocess=False)
-    out_sum = regex_pipeline(TERMS_SUMMARY, COMPANIES_ALL, reprocess=False)
-    out_simple = regex_pipeline(TERMS_SIMPLE, COMPANIES_ALL, reprocess=True)
-    return (out_simple,)
+def _(COMPANIES_ALL, TERMS_SIMPLE, regex_pipeline):
+    out_simple = regex_pipeline(TERMS_SIMPLE, COMPANIES_ALL)
+    return
 
 
 @app.cell
-def _(TERMS_SIMPLE, out_simple, plt, regex_plot_comparison):
-    regex_plot_comparison(out_simple['dfs'], terms = TERMS_SIMPLE, suptitle='Technology mentions - normalised by word count')
+def _(OUT_DIR):
+    import pandas as pd
+    df_normed = pd.read_csv(OUT_DIR + '/simple-terms/regex/normed-words.csv', index_col=[0,1,2])
+    df_unnormed = pd.read_csv(OUT_DIR + '/simple-terms/regex/unnormed.csv', index_col=[0,1,2])
+    return df_normed, df_unnormed
+
+
+@app.cell
+def _(TERMS_SIMPLE, df_normed, plt, regex_comparison):
+    regex_comparison(df_normed, terms = TERMS_SIMPLE, suptitle='Technology mentions - normalised by word count')
     plt.show()
     return
 
 
 @app.cell
-def _(COMPANIES_ALL, TERMS_SIMPLE, out_simple, plt, regex_plot_comparison):
-    regex_plot_comparison(out_simple['dfs_unnormed'], terms=TERMS_SIMPLE, cos=COMPANIES_ALL, normed_by=None,
+def _(COMPANIES_ALL, TERMS_SIMPLE, df_unnormed, plt, regex_comparison):
+    regex_comparison(df_unnormed, terms=TERMS_SIMPLE, cos=COMPANIES_ALL, normed_by=None,
                     suptitle='Technology mentions - unnormalised')
     plt.show()
     return
 
 
 @app.cell
-def _(COMPANIES_ALL, TERMS_SIMPLE, out_simple, plt, regex_plot_comparison):
-    regex_plot_comparison(out_simple['dfs_unnormed'], terms=TERMS_SIMPLE, cos=COMPANIES_ALL[:2], rank=True,
+def _(
+    COMPANIES_ALL,
+    OUT_DIR,
+    TERMS_SIMPLE,
+    df_unnormed,
+    plt,
+    regex_comparison,
+):
+    regex_comparison(df_unnormed, terms=TERMS_SIMPLE, cos=COMPANIES_ALL, rank=True,
                     suptitle='Technology mention rankings')
+    plt.savefig(OUT_DIR + '/simple-terms/regex/plots/rankings.png', dpi=300, bbox_inches='tight')
     plt.show()
     return
 

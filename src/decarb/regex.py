@@ -4,131 +4,148 @@ import pandas as pd
 import re
 import os
 import pymupdf
+from typing import Literal
 
 from decarb.terms import TermCollection, TERMS_ALL
-from decarb.companies import CompanyCollection
-from decarb.util import REPORT_TYPES_SHORT
+from decarb.companies import COMPANIES_ALL, CompanyCollection, Report, co_files
+from decarb.util import logger_regex
 
 pymupdf.TOOLS.mupdf_display_errors(on = False)
 pymupdf.TOOLS.mupdf_display_warnings(on = False)
 
-def search_file(
-    file:str|pymupdf.Document, 
+def search_report(
+    report: Report, 
     terms: TermCollection = TERMS_ALL, 
     *, 
-    count_type: str = 'all', norm_type: str = 'words', norm:bool = True
-) -> dict[str, int] | dict[str, int | float]:
+    norm:bool = False,
+    norm_type: Literal['pages','chunks', 'words'] = 'words') -> dict[str, int | float]:
+    '''
+    Search the given text for the given terms, returning a dictionary of term counts.
 
-    if isinstance(file, str): 
-            doc = pymupdf.open(file) 
-    elif isinstance(file, pymupdf.Document): 
-            doc = file
-    else:
-        raise TypeError(f'file must be a filepath or Document instance. Got {type(file)}.')
+    Parameters
+    ----------
+    report : Report
+        The report to search.
+    terms : TermCollection, optional
+        The terms to search for, by default TERMS_ALL.
+    norm : bool, optional
+        Whether to normalise the counts by the number of pages or words (as specified by norm_type). 
+        Defaults to False.
+    norm_type : Literal['pages', 'words'], optional
+        The type of normalisation to apply. If 'pages', divide the counts by the number of pages. 
+        If 'words', divide the counts by the number of words. Only applied if norm is True. Defaults to 'words'.
+    '''
 
-    out= {term.alias: 0 for term in terms}
+    if not isinstance(report, Report):
+        raise TypeError(f'Invalid report. Expected a Report instance, got {type(report)}.')
+    if norm and norm_type.lower() not in ['pages', 'words', 'chunks']:
+        raise ValueError(f'Invalid norm_type: {norm_type}. Must be "pages", "words" or "chunks".')
 
+    if report.n_chunks == 0:
+        raise ValueError(
+            f'Cannot search report with 0 chunks: {report.pdf_path} - run decaarb.llm.pipeline.stage_chunk() first.'
+        )  # TODO: regex should not rely upon llm pipeline - if anything it should be the other way around
+
+    out = {term.alias: 0 for term in terms}
+    #out.update({term.alias + '_chunk_indices': [] for term in terms})
+    
     n_words = 0
 
-    for page in doc:
-        txt = page.get_text().lower()
+    for i, chunk in enumerate(report.chunks_iter()):
 
-        n_words += len(re.findall(r"[^\W_]+", txt, re.M))
+        n_words += len(re.findall(r"[^\W_]+", chunk, re.M))
 
         for term in terms:
-            matches = re.findall(term.regex, txt, re.I)
-            if count_type == 'pages':
-                out[term.alias] += 1
-            else:
-                out[term.alias] += len(matches)
+            out[term.alias] += len(re.findall(term.regex, chunk, re.I))
+#            out[term.alias + '_chunk_indices'].append(i)   # same as llm search
 
-    n_pages = len(doc)
+    n_pages = len(pymupdf.open(report.pdf_path))
 
     if norm:
         if norm_type.lower() == 'pages':
-            out = {term: out[term]/n_pages for term in out}
+            if n_pages == 0:
+                raise ValueError(f'Cannot normalise by pages: report has 0 pages: {report.pdf_path}')
+            out = {term.alias: out[term.alias]/n_pages for term in terms}
+            out['normed_by'] = 'n_pages'
+        elif norm_type.lower() == 'chunks':
+            if report.n_chunks == 0:
+                raise ValueError(f'Cannot normalise by chunks: report has 0 chunks: {report.pdf_path}')
+            out = {term.alias: out[term.alias]/report.n_chunks for term in terms}
+            out['normed_by'] = 'n_chunks'
         elif norm_type.lower() == 'words':
-            out = {term: out[term]/n_words for term in out}
+            if n_words == 0:
+                raise ValueError(f'Cannot normalise by words: report has 0 words: {report.pdf_path}')
+            out = {term.alias: out[term.alias]/n_words for term in terms}
+            out['normed_by'] = 'n_words'
         else:
+            # can't happen
             raise ValueError(f'Invalid norm_type: {norm_type}. Must be "pages" or "words".')
+    else:
+        out['normed_by'] = None
 
     out['n_words'] = n_words
     out['n_pages'] = n_pages
+    out['n_chunks'] = report.n_chunks
+    out['company'] = report.company.folder_name
+    out['report_type'] = report.type
+    out['year'] = report.year
 
     return out
 
-def extract_year(filename: str) -> int:
-    match = re.findall(r"\d{4}", filename)
-    n_matches = len(match)
-    if n_matches == 0:
-        raise ValueError(f'filename does not contain a 4-digit year: {filename}')
-    elif n_matches > 1:
-        raise ValueError(f'more than 1 4-digit number found in filename: {filename}')
-    else:
-        return int(match[0])
-
-def search_files(
-    folder:str, 
-    terms: TermCollection = TERMS_ALL, 
-    *,
-    count_type:str = 'all', norm: bool = True,
-    year_index: bool = True,
-    norm_type: str = 'words'
-) -> pd.DataFrame:
-    if not os.path.isdir(folder):
-        raise ValueError('folder is not a folder!')
-
-    out = {}
-    for file in os.listdir(folder):
-        if file.endswith('.pdf'):
-            out[file] = search_file(os.path.join(folder, file), terms, count_type=count_type, norm=norm, norm_type=norm_type)
-            out[file]['year'] = extract_year(file)
-
-    out = pd.DataFrame(out).T
-    out.index.name = 'filename'
-    if year_index: out = out.reset_index().set_index('year')
-    return out.sort_index()
-
-
 def regex_pipeline(
-        terms: TermCollection, cos: CompanyCollection, *, 
-        count_type: str = 'all', norm_type: str = 'words',
+        terms: TermCollection, cos: CompanyCollection = COMPANIES_ALL, *, 
+        norm_type: Literal['pages','chunks', 'words'] = 'words',
         overwrite: bool = False, save: bool = True
-    ):
+    ) -> tuple[pd.DataFrame, pd.DataFrame]:
+        '''
+        Run the regex pipeline on a collection of reports.
+
+        Parameters
+        ----------
+        terms : TermCollection
+            The terms to search for.
+        cos : CompanyCollection
+            The companies whose reports to search.
+        norm_type : Literal['pages','chunks', 'words'], optional
+            The type of normalisation to apply. Default is 'words'.
+        overwrite : bool, optional
+            Whether to overwrite existing results. Default is False.
+        save : bool, optional
+            Whether to save the results. Default is True.
+
+        Returns
+        -------
+        tuple[pd.DataFrame, pd.DataFrame]
+            A tuple containing the normalised and unnormalised results.
+        '''
         
-        terms.log(f'REGEX PIPELINE START: terms={terms.folder_name}, {save=}')
+        logger_regex.debug(f'REGEX PIPELINE START: terms={terms.folder_name}, {cos=}, {save=}, {overwrite=}, {norm_type=}')
 
-        out = {}
+        regex_dir = os.path.join(terms.out_folder, 'regex')
 
-        dfs = {}
-        dfs_unnormed = {}
+        if not os.path.exists(regex_dir):
+            os.makedirs(regex_dir)
 
-        if not os.path.exists(os.path.join(terms.folder, 'mentions')):
-            os.makedirs(os.path.join(terms.folder, 'mentions'))
-        if not os.path.exists(os.path.join(terms.folder, 'mentions-unnormed')):
-            os.makedirs(os.path.join(terms.folder, 'mentions-unnormed'))
+        results_normed = []
+        results_unnormed = []
+        for report in co_files('Report', companies = cos):
+            logger_regex.debug(f'Processing report: {report}')
 
-        for co in cos:
-            for report_type in REPORT_TYPES_SHORT:
-                reports_folder = os.path.join(co.raw_folder, report_type)
+            results_normed.append(
+                search_report(report, terms, norm=True, norm_type=norm_type)
+            )
+            results_unnormed.append(
+                search_report(report, terms, norm=False)
+            )
 
-                out_fname_normed = os.path.join(terms.folder, 'mentions', f'{co.folder_name}-{REPORT_TYPES_SHORT[report_type]}.csv')
-                out_fname_unnormed = os.path.join(terms.folder, 'mentions-unnormed', f'{co.folder_name}-{REPORT_TYPES_SHORT[report_type]}.csv')
+        results_normed = pd.DataFrame(results_normed).set_index(['company', 'report_type', 'year'])
+        results_unnormed = pd.DataFrame(results_unnormed).set_index(['company', 'report_type', 'year'])
 
-                if overwrite or not os.path.exists(out_fname_normed):
-                    dfs[f'{co.folder_name}-{REPORT_TYPES_SHORT[report_type]}'] = search_files(reports_folder, terms.terms, norm=True, norm_type=norm_type, count_type=count_type, year_index=True)
-                    if save:
-                        dfs[f'{co.folder_name}-{REPORT_TYPES_SHORT[report_type]}'].to_csv(out_fname_normed)
-                else:
-                    dfs[f'{co.folder_name}-{REPORT_TYPES_SHORT[report_type]}'] = pd.read_csv(out_fname_normed, index_col=0)
-
-                if overwrite or not os.path.exists(out_fname_unnormed):
-                    dfs_unnormed[f'{co.folder_name}-{REPORT_TYPES_SHORT[report_type]}'] = search_files(reports_folder, terms.terms, norm=False, norm_type=None, count_type=count_type, year_index=True)
-                    if save:
-                        dfs_unnormed[f'{co.folder_name}-{REPORT_TYPES_SHORT[report_type]}'].to_csv(out_fname_unnormed)
-                else:
-                    dfs_unnormed[f'{co.folder_name}-{REPORT_TYPES_SHORT[report_type]}'] = pd.read_csv(out_fname_unnormed, index_col=0)
-
-        out['dfs'] = dfs
-        out['dfs_unnormed'] = dfs_unnormed
-        return out
+        if save:
+            out_fname_normed = os.path.join(regex_dir, f'normed-{norm_type}.csv')
+            out_fname_unnormed = os.path.join(regex_dir, 'unnormed.csv')
+            if not os.path.exists(out_fname_normed) or overwrite:
+                results_normed.to_csv(out_fname_normed)
+            if not os.path.exists(out_fname_unnormed) or overwrite:
+                results_unnormed.to_csv(out_fname_unnormed)
+        return results_normed, results_unnormed
