@@ -132,7 +132,7 @@ def search_results_chunks(report: Report, terms: TermCollection, term: Term, ret
     '''
     search_res = report.search_results(terms)
     if search_res is None:
-        raise FileNotFoundError(f'Search results not found for report {report.name} and terms {terms.folder_name}. Please run `search_chunks` first to generate search results.')
+        raise FileNotFoundError(f'Search results not found for report {report.name} and terms {terms.folder_name}. Please run `decarb.regex.search` first to generate search results.')
     term_alias = term.alias if isinstance(term, Term) else term  # allowing str input
     if return_type == 'dict':
         return {i: open(os.path.join(report.chunks_dir, f'chunk-{i}.md')).read() for i in search_res[term_alias]}
@@ -349,8 +349,16 @@ def term_year_key(entry: pd.Series) -> str:
     '''
     Build the accordion label for a single term-year entry.
 
-    Depends only on `entry`, so it can be computed eagerly for every year while the
-    matching body (which reads chunk files) stays behind a lazy loader.
+    Parameters
+    ----------
+    entry : pd.Series
+        A pandas Series representing a single row of the term-year analysis DataFrame.
+
+    Returns
+    -------
+    str
+        A string representing the label for the accordion, including year, sentiment, stage, maturity, 
+        and number of commitments.
     '''
     yr = entry['year']
     if not entry['report_type_published']:
@@ -377,7 +385,29 @@ def term_year_key(entry: pd.Series) -> str:
         key += f' \t|\t {n_commitments} commitment{"s" if n_commitments != 1 else ""}'
     return key
 
-def term_year_analysis(entry: pd.Series, terms: TermCollection, *, return_key: bool = False, lazy_chunks: bool = True) -> mo.Html:
+def term_year_analysis(entry: pd.Series, terms: TermCollection, *, return_key: bool = False, lazy_chunks: bool = True) -> mo.Html | tuple[str, mo.Html]:
+    '''
+    Display the analysis results for a single term-year entry, 
+    including sentiment, stage, maturity, commitments, and the relevant chunks.
+    
+    Parameters
+    ----------
+    entry : pd.Series
+        A pandas Series representing a single row of the term-year analysis DataFrame.
+    terms : TermCollection
+        The collection of terms used in the analysis.
+    return_key : bool, optional
+        Whether to return the term-year key along with the analysis output. Default is False.
+    lazy_chunks : bool, optional
+        Whether to load the chunks lazily (only when the user expands the accordion). Default is True.
+
+    Returns
+    -------
+    mo.Html or tuple[str, mo.Html]
+        A vstack of mds showing the sentiment, stage, maturity, commitments, 
+        along with their respective quotes, as well as the relevant chunks for the term-year entry.
+        If `return_key` is True, returns a tuple containing the term-year key and the vstack of mds.
+    '''
 
     if not entry['report_type_published']:
         out = mo.md(f"> Report type '{entry['report_type']}' not published in {entry['year']}")
@@ -396,12 +426,10 @@ def term_year_analysis(entry: pd.Series, terms: TermCollection, *, return_key: b
     if not entry['report_type_published']:
         chunks = [f"Report type '{rt}' not published in {yr}"]
     else:
-        # This is the only file I/O in the pipeline, and it runs lazily (only when a
-        # year is expanded). Guard it so a missing search-result or chunks directory
-        # renders a message rather than leaving the lazy loader spinning forever.
         try:
             chunks = search_results_chunks(Report.from_metadata(co, rt, yr), terms, entry['term_alias'])
         except (FileNotFoundError, KeyError, ValueError) as e:
+            # backup output in case of error
             out = mo.md(f'> <span style="color: lightcoral">Chunks unavailable for {co} {rt} {yr} / {entry["term_alias"]}: {e}</span>')
             if return_key:
                 out = (term_year_key(entry), out)
@@ -460,9 +488,9 @@ def company_report_results(df: pd.DataFrame, company_fname: str, terms: TermColl
     company_fname : str
         The filename of the company to get the results for. Should be one of the recognised companies, as in the keys of `companies.COMPANY_ALIASES`.
     terms : TermCollection
-        The collection of terms to analyze.
+        The collection of terms used in the analysis.
     report_type : str
-        The report type to analyze. Should be one of the recognised report types, as in the keys of `util.REPORT_TYPES_LONG`.
+        The report type to analyse. Should be one of the recognised report types, as in the keys of `util.REPORT_TYPES_LONG`.
 
     Returns
     -------
@@ -488,12 +516,7 @@ def company_report_results(df: pd.DataFrame, company_fname: str, terms: TermColl
             ])
             continue
 
-        # A plain callable: mo.ui.tabs(lazy=True) wraps each value in mo.lazy exactly
-        # once. Wrapping it here as well gives mo.lazy(mo.lazy(...)), which never loads.
         def make_term_panel(term=term, df_term=df_term):
-            # Keys are built eagerly (cheap, no file I/O); the bodies are plain
-            # callables so mo.accordion(lazy=True) defers the chunk reads until a
-            # year is expanded.
             year_accordion = {
                 term_year_key(entry): (lambda entry=entry: term_year_analysis(entry, terms, return_key=False))
                 for entry in (df_term[df_term['year'] == year].iloc[0] for year in df_term['year'].unique()) if entry['term_regex_found']
