@@ -27,7 +27,7 @@ def regex_mentions(
     terms: TermCollection = TERMS_ALL
 ):
     '''
-    Plot the number of mentions of each term in `terms` over time, using the data in `df` output from `regex_pipeline`.
+    Plot the number of mentions of each term in `terms` over time, using the data in `df` output from `regex.pipeline`.
 
     Parameters
     ----------
@@ -96,7 +96,7 @@ def regex_rankings(
         zero_fill: Literal['nan', 'min'] = 'nan'  # 'nan' or 'min' (fills with min rank + 1). ignored otherwise
 ):
     '''
-    Plot the rankings of each term in `terms` over time, using the data in `df` output from `regex_pipeline`.
+    Plot the rankings of each term in `terms` over time, using the data in `df` output from `regex.pipeline`.
     
     Parameters
     ----------
@@ -181,7 +181,7 @@ def regex_comparison(
 ):
     '''
     Create plots for each company in `cos` showing either the number of mentions of each term in `terms` 
-    or the rankings of each term over time, using the data in `df` output from `regex_pipeline`.
+    or the rankings of each term over time, using the data in `df` output from `regex.pipeline`.
 
     Parameters
     ----------

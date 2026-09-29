@@ -1,4 +1,9 @@
-__all__ = ['search_file', 'search_files', 'regex_pipeline']
+__all__ = [
+    'pdf_to_md', 'conversion_quality', 'chunk_md',
+    'search', 'search_with_metadata',
+    'pipeline',
+    'REGEX_BASELINES', 'LabellingSession'
+]
 
 import re
 import os
@@ -550,7 +555,7 @@ def search_with_metadata(
 
     return out
 
-def regex_pipeline(
+def pipeline(
         terms: TermCollection, cos: CompanyCollection = COMPANIES_ALL, *, 
         norm_type: Literal['pages','chunks', 'words'] = 'words',
         overwrite: bool = False, save: bool = True
