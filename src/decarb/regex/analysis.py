@@ -170,7 +170,7 @@ def report_term_metrics(report: Report, terms: TermCollection = TERMS_ALL) -> di
     return out
 
 
-def df_report_term_metrics(
+def df_metrics(
         terms: TermCollection = TERMS_ALL, *,
         companies: CompanyCollection | Company | None = None,
         report_types: list[str] | None = None,
