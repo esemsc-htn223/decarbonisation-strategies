@@ -14,12 +14,12 @@ __all__ = ['to_df', 'DEFAULT_MISSING']
 DEFAULT_MISSING = {
     'q1_sentiment': np.nan,
     'q1_sentiment_quotes': [],
+    'q1_framing': pd.NA,
     'q2_maturity': np.nan,
     'q2_maturity_quotes': [],
     'q3_stage': pd.NA,
     'q3_stage_quotes': [],
     'q4_commitments': [],
-    'notes': None
 }
 
 keys_in_prompt_response = set(PromptResponse.model_fields.keys())
@@ -92,15 +92,22 @@ def _mark_missing(df: pd.DataFrame, terms:TermCollection, prompt_dict: dict, *,
     Returns
     -------
     pd.DataFrame
-        A new dataframe with missing rows added for each company, report type, year, and term
+        A new dataframe with missing rows added for each company, report type, year, and term.
+        Different types of missing values are indicated by the following boolean columns:
+        - `report_type_published` False: the company published no report of that type that year.
+        - `term_regex_found` False: the report exists, but no chunk matched the term.
+        - `result_missing` True: a prompt was built for the cell, but no response was returned.
     '''
-    question_cols = df.drop(columns=['company', 'company_alias', 'report_type', 'term_alias', 'term_regex', 'term_fname', 'year', 'prompt', 'term_regex_found', 'report_type_published']).columns.to_list()
+    
+    question_cols = df.drop(
+        columns=['company', 'company_alias', 'report_type', 'term_alias', 'term_regex', 'term_fname', 'year', 'prompt', 'term_regex_found', 'report_type_published', 'result_missing']
+    ).columns.to_list()
     for col in missing_report_values.keys():
         if col not in question_cols:
             raise ValueError(f'Column "{col}" specified in missing_report_values is not found in the dataframe.')
     for col in missing_term_values.keys():
         if col not in question_cols:
-            raise ValueError(f'Column "{col}" specified in missing_term_values is not found in the dataframe.')
+            print(f'Column "{col}" specified in missing_term_values is not found in the dataframe - will be ignored.')
 
     new_rows = {}
 
@@ -132,23 +139,26 @@ def _mark_missing(df: pd.DataFrame, terms:TermCollection, prompt_dict: dict, *,
                         **{col: missing_report_values.get(col, pd.NA) for col in question_cols},
                         'term_regex_found': False,
                         'report_type_published': False,
+                        'result_missing': False,
                     }
 
                 for yr in years_term_missing:
-                        index = make_index(company, report_type, yr, term)
-                        new_rows[index] = {
-                            'company': company,
-                                'company_alias': cos.get(company, company),
-                                'report_type': report_type,
-                                'term_alias': term.alias,
-                                'term_regex': term.regex,
-                                'term_fname': term.prompt_fname,
-                                'year': str(yr),
-                                'prompt': prompt_dict.get(index, pd.NA),
-                                **{col: missing_term_values.get(col, pd.NA) for col in question_cols},
-                                'term_regex_found': False,
-                                'report_type_published': True,
-                            }
+                    index = make_index(company, report_type, yr, term)
+                    prompt_exists = index in prompt_dict
+                    new_rows[index] = {
+                        'company': company,
+                        'company_alias': cos.get(company, company),
+                        'report_type': report_type,
+                        'term_alias': term.alias,
+                        'term_regex': term.regex,
+                        'term_fname': term.prompt_fname,
+                        'year': str(yr),
+                        'prompt': prompt_dict.get(index, pd.NA),
+                        **{col: missing_term_values.get(col, pd.NA) for col in question_cols},
+                        'term_regex_found': prompt_exists,
+                        'report_type_published': True,
+                        'result_missing': prompt_exists,
+                    }
     return pd.concat([
         df, 
         pd.DataFrame(list(new_rows.values()), index=new_rows.keys())
@@ -236,6 +246,8 @@ def to_df(*,
                 prompt_dict[json_line['custom_id']] = json_line['body']['messages'][0]['content']
 
     responses = []
+    retired_terms = set()
+    unparseable = []
 
     if isinstance(out_jsonl_paths, str):
         out_jsonl_paths = [out_jsonl_paths]
@@ -245,8 +257,28 @@ def to_df(*,
             entry = json.loads(entry)
             id = entry['custom_id']
             co, rt, yr, term = id.split('_')
-            entry = json.loads(entry['response']['body']['choices'][0]['message']['content'])
-            term = terms[term]
+            choice = entry['response']['body']['choices'][0]
+            try:
+                entry = json.loads(choice['message']['content'])
+            except json.JSONDecodeError:
+                # a response truncated at the output token cap is not valid json, so cannot be scored
+                unparseable.append(id)
+                logger_llm.error(f'UNPARSEABLE RESULT: {id} (finish_reason={choice.get("finish_reason")}, '
+                                 f'{len(choice["message"]["content"])} chars). Skipping.')
+                continue
+            try:
+                term = terms[term]
+            except KeyError:
+                # results for terms that have since been retired from the collection
+                if term not in retired_terms:
+                    retired_terms.add(term)
+                    logger_llm.warning(f'RESULT FOR RETIRED TERM: "{term}" is not in "{terms}". Skipping its results.')
+                continue
+
+            # results written before a schema field existed lack it entirely
+            for _field, _default in DEFAULT_MISSING.items():
+                entry.setdefault(_field, _default)
+            entry = {k: v for k, v in entry.items() if k in DEFAULT_MISSING or not k.startswith('q')}
 
             entry['id'] = id
             entry['company'] = co
@@ -259,6 +291,7 @@ def to_df(*,
             entry['prompt'] = prompt_dict[id]
             entry['term_regex_found'] = True
             entry['report_type_published'] = True
+            entry['result_missing'] = False
             responses.append(entry)
 
 

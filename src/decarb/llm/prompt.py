@@ -13,6 +13,8 @@ import uuid
 import tiktoken
 from tqdm import tqdm
 import pandas as pd
+import numpy as np
+import re
 
 from decarb.companies import Company, CompanyCollection, Report, file_metadata, co_files
 from decarb.terms import Term, TermCollection
@@ -33,11 +35,52 @@ STATUS_IN_QUEUE = STATUS_WORKING + STATUS_FAILING  # all statuses that consume e
 STATUS_NOT_IN_QUEUE = STATUS_FAILED + STATUS_COMPLETED  # all statuses that do not consume enqueued limit
 
 
+# Company and brand names to remove when masking. Matching is case-insensitive, because report
+# headings are frequently upper case (e.g. "SHELL STORY: WHAT WE DO").
+COMPANY_PATTERNS = {
+    'bp': r'\bBP\b|\bB\.P\.|British\s+Petroleum|\bAmoco\b|\bCastrol\b|\bAral\b|\bArco\b',
+    'chevron': r'\bChevron\b|\bTexaco\b|\bCaltex\b|\bUnocal\b',
+    'exxon': r'\bExxonMobil\b|\bExxon\b|\bMobil\b|\bEsso\b',
+    'shell': r'\bShell\b|Royal\s+Dutch',
+    'eni': r'\bEni\b|\bAgip\b',
+    'total': r'\bTotalEnergies\b|\bTotal\s+E&P\b|\bTotal\s+S\.A\.|\bElf\b|\bFina\b',  # can't do just 'Total'
+}
+MASK_TOKEN = 'the Company'
+
+
+def mask_entities(text: str, company: Company | str = None) -> str:
+    '''
+    Replace company and brand names in a piece of text with a neutral placeholder.
+
+    Every major's patterns are applied, not just the report's own owner, so a competitor named in the
+    text is masked too. Matching is case-insensitive. Years are not masked, and neither is the bare
+    word "Total", which is far more often an accounting term than the company.
+
+    Parameters
+    ----------
+    text : str
+        The text to mask.
+    company : Company or str, optional
+        The company the text belongs to. Unused, and accepted only so callers can pass it.
+
+    Returns
+    -------
+    str
+        The text with every recognised company or brand name replaced by "the Company".
+    '''
+    for pattern in COMPANY_PATTERNS.values():
+        text = re.sub(pattern, MASK_TOKEN, text, flags=re.I)
+    # adjacent names ("Royal Dutch Shell") collapse to a single placeholder
+    return re.sub(rf'(?:{MASK_TOKEN}\s+)+{MASK_TOKEN}', MASK_TOKEN, text, flags=re.I)
+
+
 def construct_extracts(
         report:Report, term:Term, *,
         overlap_strategy:Literal["before", "after", "both", ]|None = None,
-        overlap_amount:float = 0.2
-) -> str:
+        overlap_amount:float = 0.2,
+        max_extracts:int|None = None,
+        mask:bool = False
+) -> tuple[str, int, int]:
     '''
     Construct the extracts to include in the prompt, based on the given chunks and chunk indices, and the specified overlap strategy and amount.
     
@@ -54,10 +97,17 @@ def construct_extracts(
     overlap_amount : float, optional
         The amount of text to include from the adjacent chunk(s), as a proportion of the chunk.
         Defaults to 0.2 (i.e., a fifth of the adjacent chunk(s)). Only has an effect if overlap_strategy is not None.
+    max_extracts : int or None, optional
+        The maximum number of extracts to include. If the term matched more chunks than this, the
+        extracts are taken evenly spaced across the document rather than from the start, so the
+        sample covers the whole report. If None (the default), every matching chunk is included.
+    mask : bool, optional
+        Whether to replace the company's name and brands with a neutral placeholder, via
+        `mask_entities`. Defaults to False.
     
     Returns
     -------
-    str
+    tuple[str, int, int]
         The constructed extracts, as a string.
 
     Raises
@@ -75,6 +125,12 @@ def construct_extracts(
     chunk_inds = search_results[term.alias]
     chunks = report.chunks
 
+    n_total = len(chunk_inds)
+    if max_extracts is not None and n_total > max_extracts:
+        # evenly spaced, so a capped prompt still covers the whole document
+        keep = np.linspace(0, n_total - 1, max_extracts).round().astype(int)
+        chunk_inds = [chunk_inds[i] for i in sorted(set(keep.tolist()))]
+
     extracts = []
     for i, chunk_ind in enumerate(chunk_inds):
         extract = chunks[chunk_ind]
@@ -89,11 +145,14 @@ def construct_extracts(
             overlap_len = int(len(next_chunk.split()) * overlap_amount)
             extract = extract + "\n\n" + ' '.join(next_chunk.split()[:overlap_len])
 
+        if mask:
+            extract = mask_entities(extract, report.company)
+
         header = f"# Extract {i+1} (section {chunk_ind} / {n_chunks}):\n\n"
         
         extracts.append(f"{header + extract}")
     
-    return "\n\n------------------\n\n".join(extracts)
+    return "\n\n------------------\n\n".join(extracts), len(extracts), n_total
 
 def construct_prompt(
         report:Report, term:Term,
@@ -102,8 +161,10 @@ def construct_prompt(
         #chunks:Iterable[str], chunk_inds:Iterable[int], 
         overlap_strategy:Literal["before", "after", "both", ]|None = None,
         overlap_amount:float = 0.2,
+        max_extracts:int|None = None,
+        mask:bool = False,
         save:bool = True,
-        save_as:str|None = None, 
+        save_as:str|None = None,
         overwrite:bool = False
 ):
     '''
@@ -139,19 +200,34 @@ def construct_prompt(
         raise ValueError(f'save_as should be a path ending with .txt. Got {save_path}')
  
     co_alias = report.company.full_name
+    co_ref = 'the company' if mask else co_alias   # used in the question text, which names the firm
     year = report.year    
     report_alias = REPORT_TYPES_LONG.get(report.report_type, report.report_type.replace('-', ' '))
     
-    chunks_str = construct_extracts(
+    chunks_str, n_used, n_available = construct_extracts(
         report=report, term=term,
-        overlap_strategy=overlap_strategy, overlap_amount=overlap_amount
+        overlap_strategy=overlap_strategy, overlap_amount=overlap_amount,
+        max_extracts=max_extracts, mask=mask
     )
-    
-    prompt = f'''The following extracts have been taken from {co_alias}'s {year} {report_alias} and all relate to {term.prompt_alias}. 
 
-Use these extracts to answer the following questions. Base your answers only on the extracts, not on any other information you may 
-have about {co_alias}'s use of {term.prompt_alias} in {year}. Answers must be evidenced by direct quotes from the extracts, along
-with a justification of why each quote is relevant.
+    if mask:
+        # no company or year in the preamble: naming them anchors the answer on the model's priors
+        preamble = (f"The following extracts have been taken from the annual reporting of an energy "
+                    f"company and all relate to {term.prompt_alias}.")
+        basis = (f"Use these extracts to answer the following questions. Base your answers only on the extracts, "
+                 f"not on any other information you may have about this company or about "
+                 f"{term.prompt_alias}. Answers must be evidenced by direct quotes from the extracts, along\n"
+                 f"with a justification of why each quote is relevant.")
+    else:
+        preamble = (f"The following extracts have been taken from {co_alias}'s {year} {report_alias} "
+                    f"and all relate to {term.prompt_alias}.")
+        basis = (f"Use these extracts to answer the following questions. Base your answers only on the extracts, not on any other information you may \n"
+                 f"have about {co_alias}'s use of {term.prompt_alias} in {year}. Answers must be evidenced by direct quotes from the extracts, along\n"
+                 f"with a justification of why each quote is relevant.")
+
+    prompt = f'''{preamble}
+
+{basis}
 
 # Questions:
 1. "How positive or negative is the overall sentiment towards {term.prompt_alias}? 
@@ -179,7 +255,7 @@ Choose from:
 - 'phasing-out'
 - 'unclear'"
 
-4. "What commitments has {co_alias} made towards {term.prompt_alias}?
+4. "What commitments has {co_ref} made towards {term.prompt_alias}?
 Provide a list of commitments, flagging commitments that include specific measurable targets as verifiable."
 
 
@@ -187,7 +263,7 @@ Provide a list of commitments, flagging commitments that include specific measur
 -----------
 {chunks_str}'''
     
-    logger_llm.debug(f'PROMPT CONSTRUCTED: {co_alias}_{report_alias}_{year}_{term.prompt_fname.replace(".txt", "")} - overlap_strategy={overlap_strategy}, overlap_amount={overlap_amount}')
+    logger_llm.debug(f'PROMPT CONSTRUCTED: {co_alias}_{report_alias}_{year}_{term.prompt_fname.replace(".txt", "")} - overlap_strategy={overlap_strategy}, overlap_amount={overlap_amount}, mask={mask}, extracts={n_used}/{n_available}')
     if save:
         fname = os.path.basename(save_path)
         if os.path.exists(save_path) and not overwrite:
@@ -226,6 +302,10 @@ class PromptResponse(BaseModel):
         description="Question 1: Sentiment towards the technology, on a scale from -1 (totally negative) to 1 (totally positive), based on the quotes given in q1_sentiment_quotes",
         ge=-1.0, le=1.0
     )
+    q1_framing: Literal["opportunity", "neutral", "risk"] = Field(
+        default="neutral",
+        description="Question 1b: Whether the extracts frame the technology as a commercial opportunity for the company, as a risk or threat to it, or neither. Based on the quotes given in q1_sentiment_quotes."
+    )
 
     # Question 2: "How mature is {term.prompt_alias} framed to be, in terms of Techonology Readiness Levels?"
     q2_maturity_quotes: list[QuoteEvidence] = Field(
@@ -254,11 +334,6 @@ class PromptResponse(BaseModel):
         description="Question 4: Commitments made towards the technology."
     )
 
-    # overall notes - to be deprecated after tests.
-    notes: str|None = Field(
-        default=None,
-        description="Only populate if there are any additional notes about the response that are not captured by the other fields. Leave null otherwise."
-    )
 
 class AnalysisRecord(BaseModel):
     company: str
