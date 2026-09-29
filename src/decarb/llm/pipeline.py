@@ -5,7 +5,7 @@ from typing import Iterable, Any, Literal
 import json
 from tqdm import tqdm
 
-from decarb.llm.rag import search_chunks, pdf_to_md, chunk_md
+from decarb.regex import search, pdf_to_md, chunk_md, conversion_quality
 from decarb.llm.prompt import (
     construct_prompt,
     Job,
@@ -17,10 +17,12 @@ from decarb.terms import TermCollection, TERMS_ALL
 
 def stage_convert(cos: Company|CompanyCollection = COMPANIES_ALL, report_types: Iterable[str]|str = REPORT_TYPES,
                   num_workers: int = 2,
+                  ocr_frac_no_text_threshold: float = 0.5,
                   overwrite: bool = False,
-                  progress_bar: bool = True):
+                  progress_bar: bool = True,
+                  ):
     '''
-    Convert all company pdfs to markdown.
+    Convert all company pdfs to markdown. Returns the names of any reports that failed to convert.
 
     Parameters
     ----------
@@ -32,37 +34,78 @@ def stage_convert(cos: Company|CompanyCollection = COMPANIES_ALL, report_types: 
     num_workers : int
         The number of worker processes to use for parallel conversion, using ProcessPoolExecutor. Defaults to 2. Note that more workers may speed up conversion, 
         but will also use more memory, as each worker loads the PDF into memory to convert it.
+    ocr_frac_no_text_threshold : float
+        The fraction of the PDF pages that must have no text layer for OCR to be used. Defaults to 0.5.
+        Any PDF with more than this fraction of pages with no text layer will be converted using OCR, 
+        which is slower but more reliable for scanned documents.
     overwrite : bool
         Whether to overwrite existing markdown files. Defaults to False.
     progress_bar : bool
         Whether to show a progress bar during conversion. Defaults to True.
+
+    Returns
+    -------
+    list[str]
+        The names of any reports that raised during conversion.
     '''
-    if isinstance(cos, Company):
-        cos = [cos]
     if isinstance(report_types, str):
         report_types = [report_types]
 
+    reports = []
+    for report in co_files(yield_level='Report', companies=cos, report_types=report_types):
+        if report.pdf_path is None:
+            logger_llm.warning(f'PDF NOT FOUND: {report.report_name}. Skipping pdf->md conversion. Full path: {report._pdf_path}')
+            continue
+        if not overwrite and (os.path.isfile(report._md_path) or report.n_chunks > 0):
+            logger_llm.debug(f'ALREADY CONVERTED: {report.report_name}. Skipping pdf->md conversion.')
+            continue
+        reports.append(report)
+
+    if not reports:
+        logger_llm.debug('NOTHING TO CONVERT: every report already has markdown.')
+        if not progress_bar:
+            print('nothing to convert')
+        return []
+
+    if not progress_bar:
+        print('determining which reports need OCR')
+    df_quality = conversion_quality(reports = reports, check_type='pre-conversion',
+                                    progress_bar = progress_bar)
+
+    # longest first to maximise job overlap when working in parallel
+    reports.sort(key=lambda r: df_quality['n_pages'].get(r.report_name, 0), reverse=True)
+
+    if not progress_bar:
+        print('converting pdfs to markdown')
+    failed = []
     with ProcessPoolExecutor(max_workers=num_workers) as executor:
-        futures = []
-        for report in co_files(yield_level='Report', companies=cos, report_types=report_types):
-            if report.pdf_path is None:
-                logger_llm.warning(f'PDF NOT FOUND: {report.report_name}. Skipping pdf->md conversion. Full path: {report._pdf_path}')
-                continue
-            futures.append(executor.submit(pdf_to_md, report=report, save=True, overwrite=overwrite))
-        
+        futures = {}
+        for report in reports:
+            frac_no_text = df_quality['frac_no_text_layer'].get(report.report_name)
+            use_ocr = frac_no_text is not None and frac_no_text > ocr_frac_no_text_threshold
+            futures[executor.submit(pdf_to_md, report=report, save=True, overwrite=overwrite, use_ocr=use_ocr)] = report
+
         with tqdm(
-            total=len(futures), desc="converting pdfs to md", disable=not progress_bar, 
+            total=len(futures), desc="converting pdfs to md", disable=not progress_bar,
             bar_format='{desc}: {bar} {n}/{total}', file=sys.stdout) as pbar:
             for future in as_completed(futures):
-                future.result()  # discard result, but raise any exceptions
+                report = futures[future]
+                try:
+                    future.result()  # discard result, but surface any exceptions
+                except Exception as e:
+                    failed.append(report.report_name)
+                    logger_llm.error(f'CONVERSION FAILED: {report.report_name}. {type(e).__name__}: {e}')
                 sys.stdout.flush()  # ensure tqdm output is printed immediately
                 sys.stderr.flush()  # mupdf loves to throw to stderr, which obscures tqdm output
                 pbar.update(1)
-    
-    if not progress_bar:
-        print('conversion complete')
-    
 
+    if failed:
+        logger_llm.error(f'CONVERSION FAILED for {len(failed)} of {len(futures)} reports: {failed}')
+        print(f'conversion complete, {len(failed)} of {len(futures)} failed: {failed}')
+    elif not progress_bar:
+        print('conversion complete')
+    return failed
+    
 def stage_chunk(*,
                 num_workers: int = 5,
                 overwrite: bool = False,
@@ -100,7 +143,6 @@ def stage_chunk(*,
     if not progress_bar:
         print('chunking complete')
 
-
 def stage_search(terms: TermCollection=TERMS_ALL, *, overwrite: bool = False, progress_bar: bool = True):
     '''
     Search the markdown files created in stage_convert for the given terms, and save the results as csvs.
@@ -120,9 +162,11 @@ def stage_search(terms: TermCollection=TERMS_ALL, *, overwrite: bool = False, pr
                 logger_llm.warning(f'NO CHUNKS FOUND for {report.report_name}. Skipping search. Full path: {report._chunks_dir}')
                 continue
 
-            search_chunks(
+            search(
                 report=report, terms=terms,
-                save=True,
+                return_counts=False, return_chunk_indices=True, 
+                count_all_words=False,
+                save=True,  # save to default location in report dir
                 overwrite=overwrite
             )
             pbar.update(report.n_chunks)
@@ -130,10 +174,11 @@ def stage_search(terms: TermCollection=TERMS_ALL, *, overwrite: bool = False, pr
     if not progress_bar:
         print('search complete')
 
-
 def stage_draft(terms: TermCollection=TERMS_ALL, *, 
                 overlap_strategy: Literal["before", "after", "both", ]|None = 'both',
                 overlap_amount: float = 0.2,
+                max_extracts: int|None = None,
+                mask: bool = False,
                 overwrite: bool = False,
                 progress_bar: bool = True):
     '''
@@ -177,11 +222,16 @@ def stage_draft(terms: TermCollection=TERMS_ALL, *,
                     pbar.update(1)
                     continue
                 
+                if term_alias not in terms.aliases:
+                    # the search results cover the parent collection, which may be wider than `terms`
+                    pbar.update(1)
+                    continue
                 term = terms[term_alias]
                 logger_llm.debug(f'CONSTRUCTING PROMPT for {report:full} - {term_alias}. Saving to {report.prompt_path(terms, term)}')
                 construct_prompt(
                     report=report, term=term,
                     overlap_strategy=overlap_strategy, overlap_amount=overlap_amount,
+                    max_extracts=max_extracts, mask=mask,
                     save=True, overwrite=overwrite
                 )
                 pbar.update(1)
