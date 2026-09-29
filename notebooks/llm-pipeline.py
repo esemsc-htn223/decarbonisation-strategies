@@ -1,6 +1,6 @@
 import marimo
 
-__generated_with = "0.23.16"
+__generated_with = "0.24.2"
 app = marimo.App()
 
 
@@ -23,9 +23,9 @@ def _():
 
     from decarb.terms import TERMS_ALL, TERMS_SUMMARY, TERMS_SIMPLE
     from decarb.companies import Company, CompanyCollection, COMPANIES_ALL
-    from decarb.llm import rag, inspection, pipeline, prompt
+    from decarb import regex, llm, output
 
-    return TERMS_ALL, inspection, mo, os, pd, pipeline, plt, prompt, rag
+    return TERMS_ALL, llm, mo, os, output, pd, plt, regex
 
 
 @app.cell(hide_code=True)
@@ -37,32 +37,32 @@ def _(mo):
 
 
 @app.cell
-def _(pipeline):
-    pipeline.stage_convert(overwrite=False, progress_bar=True)
+def _(llm):
+    llm.pipeline.stage_convert(overwrite=False, progress_bar=True)
     return
 
 
 @app.cell
-def _(pipeline):
-    pipeline.stage_chunk(overwrite=True)
+def _(llm):
+    llm.pipeline.stage_chunk(overwrite=True)
     return
 
 
 @app.cell
-def _(pipeline):
-    pipeline.stage_search(overwrite=True)
+def _(llm):
+    llm.pipeline.stage_search(overwrite=True)
     return
 
 
 @app.cell
-def _(pipeline):
-    pipeline.stage_draft(overwrite=True, progress_bar=True, overlap_strategy = None)
+def _(llm):
+    llm.pipeline.stage_draft(overwrite=True, progress_bar=True, overlap_strategy = None)
     return
 
 
 @app.cell
-def _(pipeline):
-    job = pipeline.stage_submit(
+def _(llm):
+    job = llm.pipeline.stage_submit(
         overwrite=True,
         portion_strategy='max_tokens', max_tokens = 750_000,
         progress_bar=False
@@ -72,8 +72,8 @@ def _(pipeline):
 
 
 @app.cell
-def _(pipeline, job):
-    pipeline.stage_retrieve(job, progress_bar=True, verbose=True)
+def _(job, llm):
+    llm.pipeline.stage_retrieve(job, progress_bar=True, verbose=True)
     return
 
 
@@ -86,12 +86,12 @@ def _(mo):
 
 
 @app.cell
-def _(pd, prompt):
-    inspect_job = prompt.Job('da751a76a582531ca537f181f2acdab5')
+def _(llm, pd):
+    inspect_job = llm.prompt.Job('da751a76a582531ca537f181f2acdab5')
 
     df = { 'portion_index': [], 'n_prompts': [], 'token_count': [], 'start_index': [], 'end_index': [] }
 
-    for i, portion in enumerate(prompt.jsonl_portions(inspect_job.prompt_jsonl)):
+    for i, portion in enumerate(llm.prompt.jsonl_portions(inspect_job.prompt_jsonl)):
         df['portion_index'].append(i)
         df['n_prompts'].append(len(portion))
         df['token_count'].append(portion.token_count)
@@ -132,38 +132,38 @@ def _(os):
 
 
 @app.cell
-def _(chunks, inspection):
-    inspection.min_max_chunks(chunks)
+def _(chunks, output):
+    output.marimo.min_max_chunks(chunks)
     return
 
 
 @app.cell
-def _(chunks, inspection):
+def _(chunks, output):
     # display a random sample of chunks
-    inspection.random_chunks(chunks, n=5)
+    output.marimo.random_chunks(chunks, n=5)
     return
 
 
 @app.cell
-def _(chunks, inspection, plt):
-    inspection.chunk_size_hist(chunks)
+def _(chunks, output, plt):
+    output.plot.chunk_size_hist(chunks)
 
     plt.show()
     return
 
 
 @app.cell
-def _(TERMS_ALL, chunks, inspection, rag):
+def _(TERMS_ALL, chunks, output, regex):
     terms = TERMS_ALL
 
-    search_res = rag.search_chunks(chunks, terms)
-    inspection.search_summary(chunks, terms, search_res=search_res)
+    search_res = regex.search(chunks, terms)
+    output.marimo.search_summary(chunks, terms, search_res=search_res)
     return (search_res,)
 
 
 @app.cell
-def _(chunks, inspection, plt, search_res):
-    fig, ax = inspection.plot_search_results(search_res, chunks)
+def _(chunks, output, plt, search_res):
+    fig, ax = output.plot.term_search_results(search_res, chunks)
     plt.grid(which = 'major', axis = 'y', color = 'k')
     plt.show()
     return

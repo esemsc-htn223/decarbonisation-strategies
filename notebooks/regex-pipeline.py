@@ -1,6 +1,6 @@
 import marimo
 
-__generated_with = "0.24.0"
+__generated_with = "0.24.2"
 app = marimo.App()
 
 
@@ -21,7 +21,7 @@ def _():
         TERMS_ALL, TERMS_SUMMARY, TERMS_SIMPLE
     )
     from decarb.companies import COMPANIES_ALL
-    from decarb.regex import regex_pipeline
+    from decarb import regex
     from decarb.output.plot import regex_comparison
     from decarb.util import OUT_DIR
 
@@ -31,14 +31,14 @@ def _():
         TERMS_SIMPLE,
         mo,
         plt,
+        regex,
         regex_comparison,
-        regex_pipeline,
     )
 
 
 @app.cell
-def _(COMPANIES_ALL, TERMS_SIMPLE, regex_pipeline):
-    out_simple = regex_pipeline(TERMS_SIMPLE, COMPANIES_ALL)
+def _(COMPANIES_ALL, TERMS_SIMPLE, regex):
+    out_simple = regex.pipeline(TERMS_SIMPLE, COMPANIES_ALL)
     return
 
 
