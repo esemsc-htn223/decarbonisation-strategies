@@ -1,4 +1,4 @@
-__all__ = ['Term', 'TermCollection', 'TERMS_ALL', 'TERMS_SUMMARY', 'TERMS_SIMPLE']
+__all__ = ['Term', 'TermCollection', 'TermGroup', 'TERMS_ALL', 'TERMS_SUMMARY', 'TERMS_SIMPLE']
 
 import os
 import matplotlib.pyplot as plt
@@ -6,15 +6,19 @@ from typing import Iterable
 from dataclasses import dataclass
 import uuid
 import json
+from typing import Literal, get_args
 
 from decarb.util import TERMS_DIR, OUT_DIR, logger
 
+TermGroup = Literal['fossil', 'decarbonisation']
+
 @dataclass
 class Term:
-    alias: str  
+    alias: str
     regex: str
     colour: str
     prompt_alias: str|None = None
+    group: TermGroup = 'decarbonisation'
 
     #linestyle: str|None = None
     dash: bool = False
@@ -26,13 +30,15 @@ class Term:
     def __post_init__(self):
         if self.prompt_alias is None:
             self.prompt_alias = self.alias
+        if self.group not in get_args(TermGroup):
+            raise ValueError(f'Term {self.alias}: group must be one of {get_args(TermGroup)}. Got {self.group!r}')
         self.prompt_fname = self.alias.lower().replace(' ', '-').replace('(', '').replace(')', '') + '.txt'
-     
+
     def __str__(self):
         return self.alias
-     
+
     def __repr__(self):
-        return f'Term(alias={self.alias}, regex={self.regex}, colour={self.colour}, prompt_alias={self.prompt_alias})'
+        return f'Term(alias={self.alias}, regex={self.regex}, colour={self.colour}, prompt_alias={self.prompt_alias}, group={self.group})'
      
     def __hash__(self):
         return hash(self.alias)
@@ -62,6 +68,7 @@ class Term:
             regex=self.regex,
             colour=self.colour,
             prompt_alias=self.prompt_alias,
+            group=self.group,
             dash=self.dash,
             marker=self.marker,
             hatch=self.hatch,
@@ -72,6 +79,7 @@ class Term:
         if hasattr(self, 'collection'):
             raise AttributeError(f'Term {self.alias} is already part of a collection. Cannot set collection again.')
         self.collection = collection
+        return self  # allow chaining
     
 
 class TermCollection:
@@ -82,17 +90,18 @@ class TermCollection:
         if len(aliases) != len(set(aliases)):
             raise ValueError('All term aliases must be unique')
 
-        for term in terms:
+        for i, term in enumerate(terms):
             try:
                 term.set_collection(self)
             except AttributeError:
-                term.copy().set_collection(self)
+                terms[i] = term.copy().set_collection(self)
 
         self.terms = sorted(list(terms), key = lambda t: t.alias.lower())
         self.aliases = [term.alias for term in self.terms]
         self.regexes = [term.regex for term in self.terms]
         self.folder_name = folder_name.replace(' ', '-').lower()
         self.colours = [term.colour for term in self.terms]
+        self.groups = {term.group for term in self.terms}
 
         self.folder = os.path.join(TERMS_DIR, self.folder_name)
         self.json_path = os.path.join(self.folder, 'terms.json')
@@ -111,7 +120,8 @@ class TermCollection:
             'prompt_fname': term.prompt_fname,
             'regex': term.regex,
             'colour': term.colour,
-            'prompt_alias': term.prompt_alias} for term in self.terms]
+            'prompt_alias': term.prompt_alias,
+            'group': term.group} for term in self.terms]
 
         # determine if changes have been made to the terms, and if so, rewrite the json file and warn the user
         existing = None
@@ -149,7 +159,7 @@ class TermCollection:
             raise ValueError(f'TermCollection with folder name {fname} does not exist')
         with open(json_path, 'r') as f:
             terms_data = json.load(f)
-        terms = [Term(alias=term_data['alias'], regex=term_data['regex'], colour=term_data['colour'], prompt_alias=term_data.get('prompt_alias')) for term_data in terms_data]
+        terms = [Term(alias=term_data['alias'], regex=term_data['regex'], colour=term_data['colour'], prompt_alias=term_data.get('prompt_alias'), group=term_data.get('group', 'decarbonisation')) for term_data in terms_data]
         return cls(terms, fname)
 
     @classmethod
@@ -243,17 +253,19 @@ class TermCollection:
 class TermSubCollection(TermCollection):
     def __init__(self, terms: Iterable[Term], parent_collection: TermCollection):
         self.parent_collection = parent_collection
-        self.terms = list(terms)
+        self.terms = sorted(list(terms), key = lambda t: t.alias.lower())
 
         self.aliases = [term.alias for term in self.terms]
         self.regexes = [term.regex for term in self.terms]
         self.folder_name = parent_collection.folder_name
-
+        self.colours = [term.colour for term in self.terms]
+        self.groups = {term.group for term in self.terms}
 
         self.folder = parent_collection.folder
         self.json_path = parent_collection.json_path
         self.batches_folder = parent_collection.batches_folder
         self.prompts_folder = parent_collection.prompts_folder
+        self.out_folder = parent_collection.out_folder
 
         self.uuid = parent_collection.uuid + '-sub-' + uuid.uuid5(uuid.NAMESPACE_OID, ''.join([term.alias + term.regex for term in self.terms])).hex
 
@@ -518,54 +530,70 @@ TERMS_ALL = TermCollection(
     [
           Term(alias = 'Solar', regex = SOLAR_REGEX, 
                colour = 'gold', 
-               prompt_alias='solar power'),
+               prompt_alias='solar power',
+               group='decarbonisation'),
           Term(alias = 'Wind', regex = WIND_REGEX, 
                colour = 'powderblue',
-               prompt_alias='wind power'),
+               prompt_alias='wind power',
+               group='decarbonisation'),
           Term(alias = 'Hydrogen (green)', regex = GREEN_HYDROGEN_REGEX, 
                colour = 'turquoise', dash=True, edgecolour='chartreuse', hatch='....',
-               prompt_alias='green hydrogen'),
+               prompt_alias='green hydrogen',
+               group='decarbonisation'),
           Term(alias = 'Hydrogen (blue)', regex = BLUE_HYDROGEN_REGEX, 
                colour = 'turquoise', dash=True, edgecolour='blue', hatch='....',
-               prompt_alias='blue hydrogen'),
+               prompt_alias='blue hydrogen',
+               group='decarbonisation'),
           Term(alias = 'Hydrogen', regex = HYDROGEN_REGEX, 
                colour = 'turquoise',
-               prompt_alias='hydrogen'),
+               prompt_alias='hydrogen',
+               group='decarbonisation'),
           Term(alias = 'CCS', regex = CCS_REGEX, 
                colour = 'dimgray',
-               prompt_alias='carbon capture and storage'),
+               prompt_alias='carbon capture and storage',
+               group='decarbonisation'),
           Term(alias = 'Biofuel', regex = BIOFUEL_REGEX, 
                colour = 'tab:brown', dash=True, edgecolour='peru', hatch='....',
-               prompt_alias='biofuel'),
+               prompt_alias='biofuel',
+               group='decarbonisation'),
           Term(alias = 'Biogas', regex = BIOGAS_REGEX, 
                colour = 'tab:brown', dash=True, edgecolour='lightgrey', hatch='....',
-               prompt_alias='biogas'),
+               prompt_alias='biogas',
+               group='decarbonisation'),
           Term(alias = 'Geothermal', regex = GEOTHERMAL_REGEX, 
                colour = 'tab:red',
-               prompt_alias='geothermal energy'),
+               prompt_alias='geothermal energy',
+               group='decarbonisation'),
           Term(alias = 'Tidal', regex = TIDAL_REGEX, 
                colour = 'steelblue',
-               prompt_alias='tidal energy'),
+               prompt_alias='tidal energy',
+               group='decarbonisation'),
 
           Term(alias = 'Storage', regex = STORAGE_REGEX, 
                colour = 'pink',
-               prompt_alias='energy storage'),
+               prompt_alias='energy storage',
+               group='decarbonisation'),
           Term(alias = 'EVs', regex = EVS_REGEX, 
                colour = 'lightgrey',
-               prompt_alias='electric vehicles'),
+               prompt_alias='electric vehicles',
+               group='decarbonisation'),
           Term(alias = 'Nature', regex = NATURE_REGEX,
                colour = 'darkgreen',
-               prompt_alias='nature-based solutions'),
+               prompt_alias='nature-based solutions',
+               group='decarbonisation'),
 
           Term(alias = 'Nuclear (conventional)', regex = NUCLEAR_CONVENTIONAL_REGEX,
                colour = 'tab:olive',
-               prompt_alias='conventional nuclear power'),
+               prompt_alias='conventional nuclear power',
+               group='decarbonisation'),
           Term(alias = 'Nuclear (SMR)', regex = NUCLEAR_SMR_REGEX, 
                colour = 'tab:olive', dash=True, edgecolour='tab:grey', hatch='....',
-               prompt_alias='small modular reactors'),
+               prompt_alias='small modular reactors',
+               group='decarbonisation'),
           Term(alias = 'Nuclear fusion', regex = NUCLEAR_FUSION_REGEX, 
                colour = 'tab:orange',
-               prompt_alias='nuclear fusion'),
+               prompt_alias='nuclear fusion',
+               group='decarbonisation'),
      ],
      folder_name='all-terms'
 )
@@ -574,42 +602,54 @@ TERMS_SUMMARY = TermCollection(
     [
         Term(alias = 'Solar', regex = SOLAR_REGEX, 
              colour = 'gold',
-             prompt_alias='solar power'),
+             prompt_alias='solar power',
+             group='decarbonisation'),
         Term(alias = 'Wind', regex = WIND_REGEX, 
              colour = 'powderblue',
-             prompt_alias='wind power'),
+             prompt_alias='wind power',
+             group='decarbonisation'),
         Term(alias = 'Hydrogen', regex = f'{GREEN_HYDROGEN_REGEX}|{BLUE_HYDROGEN_REGEX}|{HYDROGEN_REGEX}', 
              colour = 'turquoise',
-             prompt_alias='hydrogen'),
+             prompt_alias='hydrogen',
+             group='decarbonisation'),
         Term(alias = 'CCS', regex = CCS_REGEX, 
              colour = 'dimgray',
-             prompt_alias='carbon capture and storage'),
+             prompt_alias='carbon capture and storage',
+             group='decarbonisation'),
         Term(alias = 'Bioenergy', regex = f'{BIOFUEL_REGEX}|{BIOGAS_REGEX}', 
              colour = 'tab:brown',
-             prompt_alias='bioenergy'),
+             prompt_alias='bioenergy',
+             group='decarbonisation'),
         Term(alias = 'Geothermal', regex = GEOTHERMAL_REGEX, 
              colour = 'tab:red',
-             prompt_alias='geothermal energy'),
+             prompt_alias='geothermal energy',
+             group='decarbonisation'),
         Term(alias = 'Tidal', regex = TIDAL_REGEX, 
              colour = 'steelblue',
-             prompt_alias='tidal energy'),
+             prompt_alias='tidal energy',
+             group='decarbonisation'),
 
         Term(alias = 'Storage', regex = STORAGE_REGEX, 
              colour = 'pink',
-             prompt_alias='energy storage'),
+             prompt_alias='energy storage',
+             group='decarbonisation'),
         Term(alias = 'EVs', regex = EVS_REGEX, 
              colour = 'lightgrey',
-             prompt_alias='electric vehicles'),
+             prompt_alias='electric vehicles',
+             group='decarbonisation'),
         Term(alias = 'Nature', regex = NATURE_REGEX, 
              colour = 'darkgreen',
-             prompt_alias='nature-based solutions'),
+             prompt_alias='nature-based solutions',
+             group='decarbonisation'),
 
         Term(alias = 'Nuclear', regex = f'{NUCLEAR_CONVENTIONAL_REGEX}|{NUCLEAR_SMR_REGEX}', 
              colour = 'tab:olive',
-             prompt_alias='nuclear energy'),
+             prompt_alias='nuclear energy',
+             group='decarbonisation'),
         Term(alias = 'Fusion', regex = NUCLEAR_FUSION_REGEX, 
              colour = 'tab:orange',
-             prompt_alias='nuclear fusion')
+             prompt_alias='nuclear fusion',
+             group='decarbonisation')
     ], 
     folder_name='summary-terms'
 )
@@ -618,60 +658,78 @@ TERMS_SIMPLE = TermCollection(
     [
         Term(alias = 'Solar', regex = r'solar|\bPV\b|\bP\.V\.\b|photovoltaic|\bCSP\b|\bC\.S\.P\.\b', 
              colour = 'gold',
-             prompt_alias='solar power'),
+             prompt_alias='solar power',
+             group='decarbonisation'),
         Term(alias = 'Wind', regex = r'\bwinds?\b(?!\s+(down|up))',
              colour = 'powderblue',
-             prompt_alias='wind power'),
+             prompt_alias='wind power',
+             group='decarbonisation'),
         Term(alias = 'Hydrogen', regex = r'hydrogen|h2', 
              colour = 'turquoise',
-             prompt_alias='hydrogen'),
+             prompt_alias='hydrogen',
+             group='decarbonisation'),
         Term(alias = 'CCS', regex = r'carbon\s+capture|\bccs\b|\bccus\b|\bbeccs\b|carbon\s+sequestration|co2\s+(capture|storage|sequestration|injection)|direct\s+air\s+capture|\bDAC\b',
              colour = 'dimgray',
-             prompt_alias='carbon capture and storage'),
+             prompt_alias='carbon capture and storage',
+             group='decarbonisation'),
         Term(alias = 'Biofuel', regex = r'bio-?(fuel|diesel|ethanol|methane|gas|mass)|renewable\s+(natural\s+gas|diesel)|\bRNG\b|\bR\.N\.G\.\b|\bSAF\b|sustainable\s+aviation\s+fuel|hydrotreated\s+vegetable\s+oil|\bHVO\b',
              colour = 'tab:brown',
-             prompt_alias='biofuel'),
+             prompt_alias='biofuel',
+             group='decarbonisation'),
         Term(alias = 'Geothermal', regex = r'geothermal|ground\.source|ground\s+source', 
              colour = 'tab:red',
-             prompt_alias='geothermal energy'),
+             prompt_alias='geothermal energy',
+             group='decarbonisation'),
         Term(alias = 'Tidal', regex = r'tidal|wave\s+(energy|power|farm|converter|device|project)|ocean\s+energy|\bOTEC\b',
              colour = 'steelblue',
-             prompt_alias='tidal energy'),
+             prompt_alias='tidal energy',
+             group='decarbonisation'),
         Term(alias = 'Storage', regex = r'batter(y|ies)\s+(storage|system|technolog|pack|cell|manufactur|plant|project|capacity|chemistr)|(advanced|lithium(.ion)?|solid.state|flow|redox|vanadium|sodium.ion|nickel.metal|nimh|lead.acid)\s+batter(y|ies)|energy\s+storage|\b(BESS|B\.E\.S\.S\.|CAES|C\.A\.E\.S\.|LDES)\b|compressed\s+air|pumped.hydro|grid.scale\s+storage',
              colour = 'pink',
-             prompt_alias='energy storage'),
+             prompt_alias='energy storage',
+             group='decarbonisation'),
         Term(alias = 'EVs', regex = r'\b(electric\s+vehicle|EV|E\.V\.|BEV|PHEV)s?\b|plug.?in\s+hybrid|charg(ing|e)\s+(point|station|network|infrastructure|hub)|vehicle.to.grid|\bV2G\b',
              colour = 'lightgrey',
-             prompt_alias='electric vehicles'),
+             prompt_alias='electric vehicles',
+             group='decarbonisation'),
         Term(alias = 'Nature', regex = r'\b(nature.based|nature\s+based|(re|af)forestation)\b|carbon\s+(credit|offset)|natural\s+climate\s+solution|voluntary\s+carbon\s+market|\bVCM\b|REDD\+?|blue\s+carbon|forest\s+carbon',
              colour = 'darkgreen',
-             prompt_alias='nature-based solutions'),
+             prompt_alias='nature-based solutions',
+             group='decarbonisation'),
         Term(alias = 'Nuclear', regex = r'nuclear\s+(power|plants?|energy|reactor|fleet|fission|programme|program|capacity|technology)|(small|advanced)\s+modular\s+reactor',
              colour = 'tab:olive',
-             prompt_alias='nuclear energy'),
+             prompt_alias='nuclear energy',
+             group='decarbonisation'),
         Term(alias = 'Fusion', regex = r'nuclear\s+fusion|fusion\s+(energy|power|reactor|plant|research)',
              colour = 'tab:orange',
-             prompt_alias='nuclear fusion'),
+             prompt_alias='nuclear fusion',
+             group='decarbonisation'),
 
         # Fossil fuel technologies, for comparison against the decarbonisation terms above.
         Term(alias = 'Coal', regex = r'\bcoal\b|lignite|anthracite|coal.fired|thermal\s+coal|metallurgical\s+coal|coking\s+coal|coal.to.(liquid|gas)|\bCTL\b',
              colour = 'black',
-             prompt_alias='coal'),
+             prompt_alias='coal',
+             group='fossil'),
         Term(alias = 'Oil', regex = r'crude\s+oil|\bcrude\b|petroleum\s+(product|refin|liquid)|oil\s+(production|field|reserves|price|demand|supply|output|well|discover)|\bbbls?\b|barrels?\s+of\s+oil(?!\s+equivalent)',
              colour = 'saddlebrown',
-             prompt_alias='crude oil'),
+             prompt_alias='crude oil',
+             group='fossil'),
         Term(alias = 'Natural gas', regex = r'natural\s+gas|\bLNG\b|\bCNG\b|\bNGLs?\b|gas.fired|\bCCGT\b|shale\s+gas|associated\s+gas|gas\s+(production|field|reserves|pipeline|processing|liquefaction|market|demand|supply|price|well)',
              colour = 'indianred',
-             prompt_alias='natural gas'),
+             prompt_alias='natural gas',
+             group='fossil'),
         Term(alias = 'Refining', regex = r'refin(ery|eries|ing)|\bcrackers?\b|hydrocracker|catalytic\s+crack|distillation\s+unit|throughput\s+capacity',
              colour = 'darkslateblue',
-             prompt_alias='oil refining'),
+             prompt_alias='oil refining',
+             group='fossil'),
         Term(alias = 'Petrochemicals', regex = r'petrochemical|\bolefins?\b|\baromatics?\b|polyethylene|polypropylene|\bPTA\b|ethylene|propylene|\bmonomer',
              colour = 'rebeccapurple',
-             prompt_alias='petrochemicals'),
+             prompt_alias='petrochemicals',
+             group='fossil'),
         Term(alias = 'Unconventional', regex = r'oil\s+sands|\bshale\b|tight\s+oil|tight\s+gas|fracking|hydraulic\s+fractur|\bbitumen\b|heavy\s+oil|coalbed\s+methane|\bCBM\b|synthetic\s+crude',
              colour = 'darkkhaki',
-             prompt_alias='unconventional oil and gas')
+             prompt_alias='unconventional oil and gas',
+             group='fossil')
     ],
     folder_name = 'simple-terms'
 )
