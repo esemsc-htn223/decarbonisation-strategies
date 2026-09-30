@@ -640,9 +640,15 @@ def _normalise_batch_id(batch_id: str) -> str:
     return batch_id
 
 
-def _iter_job_infos() -> Iterator[tuple[str, dict]]:
+def _iter_job_infos(terms: TermCollection|None = None) -> Iterator[tuple[str, dict]]:
     '''Yield (path, contents) for every job info file under TERMS_DIR.'''
-    for root, dirs, files in os.walk(TERMS_DIR):
+    if terms is None:
+        dir_to_search = TERMS_DIR
+    else:
+        if isinstance(terms, str):
+            terms = TermCollection.from_folder(terms)
+        dir_to_search = terms.folder
+    for root, dirs, files in os.walk(dir_to_search):
         for file in sorted(files):
             if not file.endswith('-info.json'):
                 continue
@@ -848,6 +854,7 @@ class Job:
         info = self._new_info() if raw_info is None else self._migrate_info(raw_info)
         if info is not raw_info:  # _migrate_info returns the same object when nothing needed doing
             self._write_info(info)
+        self.created_at = info.get('created_at')  # for checking job creation time without loading info into cache
         self._update_job_status('auto')
 
     # ------------------------------------------------------------------ #
@@ -930,10 +937,10 @@ class Job:
         raise ValueError(f"Batch with ID {batch_id} not found.")
 
     @classmethod
-    def list_all(cls) -> list['Job']:
-        '''Return a Job for every job info file found under TERMS_DIR.'''
+    def list_all(cls, terms: TermCollection|None = None) -> list['Job']:
+        '''Return a Job for every job info file found under TERMS_DIR or the specified term collection.'''
         jobs = []
-        for info_path, info in _iter_job_infos():
+        for info_path, info in _iter_job_infos(terms=terms):
             try:
                 jobs.append(cls(info['parent']))
             except FileNotFoundError:
@@ -1044,7 +1051,7 @@ class Job:
         return self.n_prompts
 
     def __repr__(self):
-        return f'Job(id={self.id}, n_prompts={self.n_prompts}, status={self.status})'
+        return f'Job(id={self.id}, terms={self.terms}, n_prompts={self.n_prompts}, created_at={time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(self.created_at))}, status={self.status})'
 
     # ------------------------------------------------------------------ #
     # info file

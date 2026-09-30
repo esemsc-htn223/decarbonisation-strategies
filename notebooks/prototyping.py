@@ -406,8 +406,23 @@ def _(mo):
 
 
 @app.cell
+def _():
+    import datetime
+    import time
+    _dt = 1788062525.8596401
+    datetime.datetime.fromtimestamp(_dt).strftime('%Y-%m-%d %H:%M:%S'), time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(_dt))
+    return
+
+
+@app.cell
 def _(llm):
-    job = llm.prompt.Job('14ea7e40c9c757c28629d5cb4c906445')
+    llm.Job.list_all()
+    return
+
+
+@app.cell
+def _(llm):
+    job = llm.Job('14ea7e40c9c757c28629d5cb4c906445')
     job
     return (job,)
 
