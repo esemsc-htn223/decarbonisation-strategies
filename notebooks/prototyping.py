@@ -59,14 +59,8 @@ def _(mo):
 
 
 @app.cell
-def _(TERMS_SIMPLE):
-    TERMS_SIMPLE.regexes
-    return
-
-
-@app.cell
 def _(TERMS_SIMPLE, pd):
-    df_iea = pd.read_csv('ignore/comparisons/IEACleanTechGuidepublicdataset.csv')
+    df_iea = pd.read_csv('data/comparisons/IEACleanTechGuidepublicdataset.csv')
 
     #df_iea['sector'].str.split(',').explode().str.strip().unique().tolist()
     df_iea.loc[
