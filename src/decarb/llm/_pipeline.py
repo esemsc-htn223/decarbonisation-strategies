@@ -16,6 +16,7 @@ from decarb.util import REPORT_TYPES, logger_llm
 from decarb.terms import TermCollection, TERMS_ALL
 
 def stage_convert(cos: Company|CompanyCollection = COMPANIES_ALL, report_types: Iterable[str]|str = REPORT_TYPES,
+                  *,
                   num_workers: int = 2,
                   ocr_frac_no_text_threshold: float = 0.5,
                   overwrite: bool = False,
@@ -101,9 +102,12 @@ def stage_convert(cos: Company|CompanyCollection = COMPANIES_ALL, report_types: 
 
     if failed:
         logger_llm.error(f'CONVERSION FAILED for {len(failed)} of {len(futures)} reports: {failed}')
-        print(f'conversion complete, {len(failed)} of {len(futures)} failed: {failed}')
-    elif not progress_bar:
-        print('conversion complete')
+
+    if not progress_bar:
+        if not failed:
+            print('conversion complete')
+        else:
+            print(f'conversion complete, {len(failed)} of {len(futures)} failed: {failed}')
     return failed
     
 def stage_chunk(*,
@@ -143,7 +147,10 @@ def stage_chunk(*,
     if not progress_bar:
         print('chunking complete')
 
-def stage_search(terms: TermCollection=TERMS_ALL, *, overwrite: bool = False, progress_bar: bool = True):
+def stage_search(terms: TermCollection=TERMS_ALL, 
+                 *, 
+                 overwrite: bool = False, 
+                 progress_bar: bool = True):
     '''
     Search the markdown files created in stage_convert for the given terms, and save the results as csvs.
 
@@ -151,6 +158,10 @@ def stage_search(terms: TermCollection=TERMS_ALL, *, overwrite: bool = False, pr
     ----------
     terms : TermCollection
         The collection of terms to search for.
+    overwrite : bool
+        Whether to overwrite existing search results. Defaults to False.
+    progress_bar : bool
+        Whether to display a progress bar. Defaults to True. If False, a message will be printed when the search is complete.
     '''
     # get total by counting the number of md files to be searched, for progress bar
 
@@ -243,7 +254,7 @@ def stage_submit(model: str = DEFAULT_MODEL, *,
                  portion_strategy: Literal['max_tokens', 'max_prompts', 'split_into_n'] = 'max_tokens',
                  max_tokens: int = 900_000, max_prompts: int = 100, split_into_n: int = 10,
                  encoding: str = 'o200k_base',
-                 companies: Company|CompanyCollection = None,
+                 cos: Company|CompanyCollection = None,
                  terms: TermCollection|None = None,
                  enqueued_token_limit: int = 900_000,
                  max_attempts: int = 3,
@@ -270,7 +281,7 @@ def stage_submit(model: str = DEFAULT_MODEL, *,
         The number of batches to split the prompts into. Defaults to 10.
     encoding : str
         The name of the token encoding to use for counting tokens in the prompts. Defaults to 'o200k_base'.
-    companies : Company, CompanyCollection or None
+    cos : Company, CompanyCollection or None
         The company or companies to include in the analysis. If None, includes all companies for which prompts have been drafted. Defaults to None.
     terms : TermCollection or None
         The collection of terms to include in the analysis. If None, includes all terms for which prompts have been drafted. Defaults to None.
@@ -298,7 +309,7 @@ def stage_submit(model: str = DEFAULT_MODEL, *,
     '''
     # collect all prompt file paths. assuming all text files are to be analysed.
     file_paths = []
-    for report in co_files(yield_level='Report', companies=companies):
+    for report in co_files(yield_level='Report', companies=cos):
         if isinstance(terms, TermCollection):
             term_coll_folder_names = [terms.folder_name]
         elif terms is None:
@@ -312,7 +323,7 @@ def stage_submit(model: str = DEFAULT_MODEL, *,
             for prompt_file in os.listdir(report.prompts_dir(term_coll_folder)):
                 if prompt_file.endswith('.txt'):
                     file_paths.append(report.prompt_path(term_coll_folder, prompt_file))
-    logger_llm.info(f'COLLECTED PROMPTS: terms={terms} {len(file_paths)} prompt files found in .{len(list(co_files(yield_level="Report", companies=companies)))} reports.')
+    logger_llm.info(f'COLLECTED PROMPTS: terms={terms} {len(file_paths)} prompt files found in .{len(list(co_files(yield_level="Report", companies=cos)))} reports.')
 
     job = Job.from_prompts(file_paths, model=model, overwrite=overwrite)
     job.submit(
@@ -367,3 +378,73 @@ def stage_retrieve(jobs: Iterable[Job]|Job|None = None, *,
     if verbose:
         print(f'retrieval complete for {len(jobs)} job(s). batch statuses: {totals}')
     return jobs
+
+def pipeline(
+    cos: Company|CompanyCollection = COMPANIES_ALL,
+    report_types: Iterable[str]|str = REPORT_TYPES,
+    terms: TermCollection=TERMS_ALL,
+    model: str = DEFAULT_MODEL,
+    *,
+    progress_bars: bool = True,
+    convert_kwargs: dict = {},
+    chunk_kwargs: dict = {},
+    search_kwargs: dict = {},
+    draft_kwargs: dict = {},
+    submit_kwargs: dict = {},
+):
+    '''
+    Run the full LLM pipeline up to Job submission for the given companies, report types, and terms.
+    Returns the submitted Job object.
+
+    Parameters
+    ----------
+    cos : Company | CompanyCollection
+        The company/companies to process. Defaults to BP, Chevron, Exxon, Shell, and Total.
+    report_types : Iterable[str] | str
+        The report type(s) to process, given as folder names to be found in each Company's data folder.
+        Defaults to annual reports and sustainability reports.
+    terms : TermCollection
+        The collection of terms to search for and draft prompts for. Defaults to TERMS_ALL.
+    model : str
+        The name of the LLM model to use for analysis. Defaults to "gpt-5.1".
+    progress_bars : bool
+        Whether to display progress bars for each stage. If 'progress_bar' is specified in any of the kwargs, 
+        it will override this value for that stage. Defaults to True.
+    convert_kwargs : dict
+        Keyword arguments to pass to the stage_convert function. Defaults to an empty dictionary.
+    chunk_kwargs : dict
+        Keyword arguments to pass to the stage_chunk function. Defaults to an empty dictionary.
+    search_kwargs : dict
+        Keyword arguments to pass to the stage_search function. Defaults to an empty dictionary.
+    draft_kwargs : dict
+        Keyword arguments to pass to the stage_draft function. Defaults to an empty dictionary.
+    submit_kwargs : dict
+        Keyword arguments to pass to the stage_submit function. Defaults to an empty dictionary.
+
+    Returns
+    -------
+    Job
+        The submitted job from stage_submit.
+    '''
+
+    for kwargs in [convert_kwargs, chunk_kwargs, search_kwargs, draft_kwargs, submit_kwargs]:
+        if not isinstance(kwargs, dict):
+            raise ValueError(f'kwargs must be a dict, got {type(kwargs)}')
+        if 'progress_bar' not in kwargs:
+            kwargs['progress_bar'] = progress_bars
+        if 'terms' in kwargs:
+            raise ValueError(f'kwargs should not contain "terms" key, - set this as a parameter to the pipeline function. Got: {list(kwargs.keys())}')
+        if 'cos' in kwargs:
+            raise ValueError(f'kwargs should not contain "cos" key, - set this as a parameter to the pipeline function. Got: {list(kwargs.keys())}')
+        if 'report_types' in kwargs:
+            raise ValueError(f'kwargs should not contain "report_types" key, - set this as a parameter to the pipeline function. Got: {list(kwargs.keys())}')
+        if 'model' in kwargs:
+            raise ValueError(f'kwargs should not contain "model" key, - set this as a parameter to the pipeline function. Got: {list(kwargs.keys())}')
+
+    failed_submissions = stage_convert(cos=cos, report_types=report_types, **convert_kwargs)
+    if failed_submissions and convert_kwargs.get('progress_bar', progress_bars):
+        print(f'{len(failed_submissions)} reports failed to convert from pdf to md. Check logs for details.')
+    stage_chunk(**chunk_kwargs)
+    stage_search(terms=terms, **search_kwargs)
+    stage_draft(terms=terms, **draft_kwargs)
+    return stage_submit(model=model, **submit_kwargs)

@@ -132,19 +132,19 @@ def _(mo):
 
 @app.cell
 def _(llm):
-    llm.pipeline.stage_convert(overwrite=True, num_workers = 4)
+    llm.stage_convert(overwrite=True, num_workers = 4)
     return
 
 
 @app.cell
 def _(llm):
-    llm.pipeline.stage_chunk(overwrite=True)
+    llm.stage_chunk(overwrite=True)
     return
 
 
 @app.cell
 def _(TERMS_SIMPLE, llm):
-    llm.pipeline.stage_search(TERMS_SIMPLE, overwrite=True)
+    llm.stage_search(TERMS_SIMPLE, overwrite=True)
     return
 
 
@@ -162,7 +162,7 @@ def _(TERMS_SIMPLE, companies, df_attention, mo, np, plt):
     fig_an, axs_an = plt.subplots(6,3, sharex=True, sharey=True, figsize=(8,15), constrained_layout=True)
     fig_sus, axs_sus = plt.subplots(6,3, sharex=True, sharey=True, figsize=(8,15), constrained_layout=True)
 
-    decarb_terms = df_attention.loc[df_attention['group'] == 'decarb']['term_alias'].unique().tolist()
+    decarb_terms = df_attention.loc[df_attention['group'] == 'decarbonisation']['term_alias'].unique().tolist()
     fossil_terms = df_attention.loc[df_attention['group'] == 'fossil']['term_alias'].unique().tolist()
     axs_map = {term: (i%6, i//6) for i, term in enumerate(decarb_terms)}
     axs_map.update({term: (i%6, i//6 + 2) for i, term in enumerate(fossil_terms)})
@@ -246,7 +246,7 @@ def _(TERMS_SIMPLE, df_attention, mo, plt):
 
 @app.cell
 def _(df_attention):
-    _df = df_attention.loc[(df_attention['company_alias'] == 'Shell') & (df_attention['report_type'] == 'annual-report') & (df_attention['group'] == 'decarb')].pivot_table(index='year', columns = 'group', values = 'share', aggfunc='sum')
+    _df = df_attention.loc[(df_attention['company_alias'] == 'Shell') & (df_attention['report_type'] == 'annual-report') & (df_attention['group'] == 'decarbonisation')].pivot_table(index='year', columns = 'group', values = 'share', aggfunc='sum')
     _vals = _df.T.values[0]
     _x = _df.index.astype(int).values
 
@@ -262,8 +262,8 @@ def _(df_attention, mo, np, plt):
     for _i, _co in enumerate(df_attention['company_alias'].unique()):
         _ax_an = _axs_an[_i%3, _i//3]
         _ax_sus = _axs_sus[_i%3, _i//3]
-        _df_plot_an = df_attention.loc[(df_attention['company_alias'] == _co) & (df_attention['report_type'] == 'annual-report') & (df_attention['group'] == 'decarb')].pivot_table(index='year', columns = 'group', values = 'share', aggfunc='sum')
-        _df_plot_sus = df_attention.loc[(df_attention['company_alias'] == _co) & (df_attention['report_type'] == 'sustainability-report') & (df_attention['group'] == 'decarb')].pivot_table(index='year', columns = 'group', values = 'share', aggfunc='sum')
+        _df_plot_an = df_attention.loc[(df_attention['company_alias'] == _co) & (df_attention['report_type'] == 'annual-report') & (df_attention['group'] == 'decarbonisation')].pivot_table(index='year', columns = 'group', values = 'share', aggfunc='sum')
+        _df_plot_sus = df_attention.loc[(df_attention['company_alias'] == _co) & (df_attention['report_type'] == 'sustainability-report') & (df_attention['group'] == 'decarbonisation')].pivot_table(index='year', columns = 'group', values = 'share', aggfunc='sum')
 
         _vals_an = _df_plot_an.T.values[0] * 100
         _vals_sus = _df_plot_sus.T.values[0] * 100

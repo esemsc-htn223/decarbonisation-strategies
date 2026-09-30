@@ -38,31 +38,31 @@ def _(mo):
 
 @app.cell
 def _(llm):
-    llm.pipeline.stage_convert(overwrite=False, progress_bar=True)
+    llm.stage_convert(overwrite=False, progress_bar=True)
     return
 
 
 @app.cell
 def _(llm):
-    llm.pipeline.stage_chunk(overwrite=True)
+    llm.stage_chunk(overwrite=True)
     return
 
 
 @app.cell
 def _(llm):
-    llm.pipeline.stage_search(overwrite=True)
+    llm.stage_search(overwrite=True)
     return
 
 
 @app.cell
 def _(llm):
-    llm.pipeline.stage_draft(overwrite=True, progress_bar=True, overlap_strategy = None)
+    llm.stage_draft(overwrite=True, progress_bar=True, overlap_strategy = None)
     return
 
 
 @app.cell
 def _(llm):
-    job = llm.pipeline.stage_submit(
+    job = llm.stage_submit(
         overwrite=True,
         portion_strategy='max_tokens', max_tokens = 750_000,
         progress_bar=False
@@ -73,7 +73,7 @@ def _(llm):
 
 @app.cell
 def _(job, llm):
-    llm.pipeline.stage_retrieve(job, progress_bar=True, verbose=True)
+    llm.stage_retrieve(job, progress_bar=True, verbose=True)
     return
 
 
