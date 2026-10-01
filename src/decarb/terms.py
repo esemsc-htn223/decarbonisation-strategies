@@ -172,6 +172,9 @@ class TermCollection:
                         return cls.from_folder(folder_name)
         raise ValueError(f'TermCollection with uuid {uuid_str} does not exist')
 
+    def by_group(self, group: TermGroup):
+        return TermSubCollection([term for term in self.terms if term.group == group], self)
+
     def __iter__(self):
         return iter(self.terms)
     
