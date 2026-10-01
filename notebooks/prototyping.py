@@ -59,6 +59,14 @@ def _(mo):
 
 
 @app.cell
+def _(mo):
+    mo.md("""
+    <span style="color: #FF8A8A">█↘→↗ </span>
+    """)
+    return
+
+
+@app.cell
 def _(TERMS_SIMPLE, pd):
     df_iea = pd.read_csv('data/comparisons/IEACleanTechGuidepublicdataset.csv')
 
@@ -307,40 +315,6 @@ def _(mo):
     return
 
 
-@app.cell
-def _(llm):
-    job_rerun = llm.prompt.Job('81c733b7aefc5b949330e814c11bf8e6')
-    job_ctrl = llm.prompt.Job('2e4ea8b7cb055fc1a6c7d87aed5f1321')
-    [job_rerun, job_ctrl]
-    return job_ctrl, job_rerun
-
-
-@app.cell
-def _(job_rerun):
-    job_rerun.refresh(adopt_orphans = False, progress_bar = True)
-    job_rerun
-    return
-
-
-@app.cell
-def _(job_rerun):
-    df_rerun = job_rerun.to_df()
-    df_rerun
-    return
-
-
-@app.cell
-def _(job_rerun):
-    job_rerun.results_comprehensive
-    return
-
-
-@app.cell
-def _(job_ctrl):
-    job_ctrl.to_df()
-    return
-
-
 @app.cell(hide_code=True)
 def _(mo):
     mo.md(r"""
@@ -400,52 +374,42 @@ def _(session):
 @app.cell(hide_code=True)
 def _(mo):
     mo.md(r"""
-    ## Initial output analysis
+    ## Output analysis
     """)
     return
 
 
 @app.cell
-def _():
-    import datetime
-    import time
-    _dt = 1788062525.8596401
-    datetime.datetime.fromtimestamp(_dt).strftime('%Y-%m-%d %H:%M:%S'), time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(_dt))
-    return
-
-
-@app.cell
 def _(llm):
-    llm.Job.list_all()
+    job_rerun = llm.prompt.Job('81c733b7aefc5b949330e814c11bf8e6')
+    job_ctrl = llm.prompt.Job('2e4ea8b7cb055fc1a6c7d87aed5f1321')
+    df_rerun = job_rerun.to_df()
+    df_ctrl = job_ctrl.to_df()
+    [job_rerun, job_ctrl]
+    return df_rerun, job_rerun
+
+
+@app.cell
+def _(df_rerun):
+    df_rerun
     return
 
 
 @app.cell
-def _(llm):
-    job = llm.Job('14ea7e40c9c757c28629d5cb4c906445')
-    job
-    return (job,)
-
-
-@app.cell
-def _(job, llm):
-    df_test = llm.results.to_df(job=job)
-    df_test
-    return (df_test,)
-
-
-@app.cell
-def _(TERMS_ALL, df_test, output):
-    output.marimo.results_tabs(df_test, TERMS_ALL)
+def _(df_rerun, job_rerun, output):
+    output.marimo.results_tabs(df_rerun, job_rerun.terms.by_group('decarbonisation'))
     return
 
 
 @app.cell
-def _(df_test, mo, output):
+def _(df_rerun, job_rerun, mo, output):
+    _fs = (9,15)
+    _ret = 'figure'
+    _terms = job_rerun.terms.by_group('decarbonisation')
     mo.ui.tabs({
-        'Sentiment': output.plot.llm_terms_heatmap(df_test, 'q1_sentiment', figsize=(9,15), return_type='figure'),
-        'Maturity': output.plot.llm_terms_heatmap(df_test, 'q2_maturity', figsize=(9,15), return_type='figure'),
-        'Stage': output.plot.llm_terms_heatmap(df_test, 'q3_stage', figsize=(9,15), return_type='figure')
+        'Sentiment': output.plot.llm_terms_heatmap(df_rerun, 'q1_sentiment', terms = _terms, figsize=_fs, return_type=_ret),
+        'Maturity': output.plot.llm_terms_heatmap(df_rerun, 'q2_maturity', terms = _terms, figsize=_fs, return_type=_ret),
+        'Stage': output.plot.llm_terms_heatmap(df_rerun, 'q3_stage', terms = _terms, figsize=_fs, return_type=_ret)
     }, label = 'Question', lazy = False)
     return
 
