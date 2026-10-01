@@ -432,13 +432,22 @@ def llm_timeseries(df:pd.DataFrame, variable: Literal['q1_sentiment', 'q2_maturi
         raise ValueError(f"Variable '{variable}' should be either 'q1_sentiment' or 'q2_maturity'.")
     elif variable == 'q1_sentiment':
         domain = [-1, 1]
+        shape = alt.Shape(
+            'q1_framing:N', title = 'Framing', 
+            scale = alt.Scale(domain = ['opportunity', 'neutral', 'risk'], range = ['triangle-up', 'circle', 'triangle-down']),
+            legend = alt.Legend(orient = 'bottom', title = None, labelFontSize = 12, symbolSize = 100),
+        )
+        colour = alt.Color('q1_framing:N', title = 'Framing', scale = alt.Scale(domain = ['opportunity', 'neutral', 'risk'], range = ['green', 'black', 'red']), legend = None)
+
     elif variable == 'q2_maturity':
         domain = [1, 9]
+        shape = alt.Undefined
+        colour = alt.Undefined
 
     df_co_rt = df[(df["company"] == company) & (df["report_type"] == report_type)].copy()
     all_years = sorted(df['year'].unique())
     chart = alt.Chart(df_co_rt[(df_co_rt['term_alias'] == term.alias)])
-    lines = chart.mark_point(color = term.colour).encode(
+    lines = chart.mark_point(filled = False, size = 75).encode(
                 x = alt.X('year:O')
                     .scale(domain = all_years)
                     .axis(title = None, labelAngle = -45, offset = -height_px//2, 
@@ -453,9 +462,13 @@ def llm_timeseries(df:pd.DataFrame, variable: Literal['q1_sentiment', 'q2_maturi
                 tooltip = [
                     alt.Tooltip('year:O', title = 'Report Year'),
                     alt.Tooltip('q1_sentiment:Q', title = 'Sentiment'),
-                    alt.Tooltip('q2_maturity:N', title = 'Maturity'),
+                    alt.Tooltip('q1_framing:N', title = 'Framing'),
+                    alt.Tooltip('q2_maturity:Q', title = 'Maturity'),
                     alt.Tooltip('q3_stage:N', title = 'Stage'),
                 ]
+                ,
+                shape = shape,
+                color = colour
             ).properties(
                 #title = f'Sentiment over Time for {term.alias}',
                 width = width_px,

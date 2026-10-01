@@ -28,39 +28,38 @@ COLOR_CMT = "#E8FF8A"
 
 STG_MAP = {
     "research and development": {
-        'alias': "1/4 - R&D",
+        'alias': "1/4 - Research and Development",
+        'alias_short': "1/4 - R+D",
         'style': {'color': '#8AC4FF'}
     },
     "pilot": {
         'alias': "2/4 - Pilot",
+        'alias_short': "2/4 - Pilot",
         'style': {'color': "#1F8FFF"}
     },
     "demonstration": {
         'alias': "3/4 - Demonstration",
+        'alias_short': "3/4 - Demo",
         'style': {'color': '#0080FF'}
     },
     "commercial-deployment": {
         'alias': "4/4 - Deployment",
+        'alias_short': "4/4 - Deploy",
         'style': {'color': '#0052A3'}
     },
     "unclear": {
-        'alias': "-. - Unclear",
+        'alias': "-/4 - Unclear",
+        'alias_short': "-/4 - Unclear",
         'style': {'color': '#cccccc'}
     },
     "phasing-out": {
         'alias': "0/4 - Phasing Out",
+        'alias_short': "0/4 - Phase Out",
         'style': {'color': '#e65054'}
     },
-    pd.NA: {
-        'alias': "-. - Unclear",
-        'style': {'color': '#cccccc'}
-    },
-    np.nan: {
-        'alias': "-. - Unclear",
-        'style': {'color': '#cccccc'}
-    },
-    None: {
-        'alias': "-. - Unclear",
+    'unclear': {
+        'alias': "-/4 - Unclear",
+        'alias_short': "-/4 - Unclear",
         'style': {'color': '#cccccc'}
     }
 }
@@ -68,42 +67,52 @@ STG_MAP = {
 MAT_MAP = {
     1: {
         'alias': "1/9 - Initial idea reported",
+        'alias_short': "1/9 - Idea",
         'style': {'color': '#F8CDF9'}
     },
     2: {
         'alias': "2/9 - Concept development",
+        'alias_short': "2/9 - Concept",
         'style': {'color': '#F5BCF7'}
     },
     3: {
         'alias': "3/9 - Early-stage testing",
+        'alias_short': "3/9 - Early tests",
         'style': {'color': '#F1ABF5'}
     },
     4: {
         'alias': "4/9 - Pilot implementation",
+        'alias_short': "4/9 - Pilot",
         'style': {'color': '#ED9AF3'}
     },
     5: {
         'alias': "5/9 - Scale-up planning",
+        'alias_short': "5/9 - Scale-up",
         'style': {'color': '#E988F0'}
     },
     6: {
         'alias': "6/9 - Commercial deployment",
+        'alias_short': "6/9 - Deploy",
         'style': {'color': '#E475EE'}
     },
     7: {
         'alias': "7/9 - Market penetration",
+        'alias_short': "7/9 - Market",
         'style': {'color': '#DF61EB'}
     },
     8: {
-        'alias': "8/9 - Optimization",
+        'alias': "8/9 - Optimisation",
+        'alias_short': "8/9 - Optimise",
         'style': {'color': '#D94AE9'}
     },
     9: {
         'alias': "9/9 - Mature technology",
+        'alias_short': "9/9 - Mature",
         'style': {'color': '#D32CE6'}
     },
-    None:{
-        'alias': "-. - Unclear",
+    'unclear':{
+        'alias': "-/9 - Unclear",
+        'alias_short': "-/9 - Unclear",
         'style': {'color': '#cccccc'}
     }
 }
@@ -262,7 +271,7 @@ def search_summary(report: Report, terms: Term|TermCollection = TERMS_ALL) -> mo
     return mo.accordion(master_accordion_content, multiple=False)
 
 
-def mark_term_mentions(md: str, term: Term):
+def _mark_term_mentions(md: str, term: Term):
     matches = re.finditer(term.regex, md, re.I)
     prev_shift = 0
     for match in matches:
@@ -271,7 +280,7 @@ def mark_term_mentions(md: str, term: Term):
         prev_shift += 20  # len('<u><mark></mark></u>')
     return md
 
-def mark_quote(md: str, quotes: list, colour: str = '#ffcccb', add_label:str = '') -> str:
+def _mark_quote(md: str, quotes: list, colour: str = '#ffcccb', add_label:str = '') -> str:
 
     for quote in quotes:
         if isinstance(quote,dict):
@@ -283,24 +292,7 @@ def mark_quote(md: str, quotes: list, colour: str = '#ffcccb', add_label:str = '
         md = md.replace(quote, f'<mark style="background-color: {colour}">{quote}{add_label}</mark>')
     return md
 
-def count_quote_mentions(md: str, quotes: list) -> int:
-    if not quotes:
-        return 0
-    count = 0
-    for quote in quotes:
-        if isinstance(quote,dict):
-            quote = quote['quote']
-        if '...' in quote:
-            n_total = len(quote.split('...'))
-            for q in quote.split('...'):
-                if q.strip() and q in md:
-                    count += 1
-            count = count/n_total  # return as a fraction of how many parts of the quote were present
-        if quote in md:
-            count += 1  # quotes wont appear more than once
-    return count
-
-def quote_stack(quotes: list) -> mo.Html:
+def _quote_stack(quotes: list) -> mo.Html:
     quotes_stk = []
     for q in quotes:
         quotes_stk.append(
@@ -337,15 +329,18 @@ def commitment_accordion(commitments: list) -> mo.Html:
             ])
     return mo.accordion(quotes_acc)
 
-def _entry_styles(entry: pd.Series) -> tuple:
-    '''Look up the maturity/stage display details and inline styles for an entry.'''
-    mat_details = MAT_MAP.get(entry['q2_maturity'], {'alias': str(entry['q2_maturity']), 'style': {}})
+def _entry_styles(entry: pd.Series, short: bool = False) -> tuple:
+    '''Look up the maturity/stage display details and inline styles for an entry. If `short` is True, use the short alias for maturity/stage.'''
+    mat_details = MAT_MAP.get(entry['q2_maturity'], MAT_MAP['unclear'])
     stg = entry['q3_stage']
-    stg_details = STG_MAP.get(stg, {'alias': stg.title() if isinstance(stg, str) else str(stg), 'style': {}})
+    stg_details = STG_MAP.get(stg, STG_MAP['unclear'])
     style = lambda details: '; '.join(f"{k}: {v}" for k, v in details["style"].items())
+    if short:
+        mat_details['alias'] = mat_details.get('alias_short', mat_details['alias'])
+        stg_details['alias'] = stg_details.get('alias_short', stg_details['alias'])
     return mat_details, style(mat_details), stg_details, style(stg_details)
 
-def term_year_key(entry: pd.Series) -> str:
+def _term_year_key(entry: pd.Series) -> str:
     '''
     Build the accordion label for a single term-year entry.
 
@@ -364,26 +359,40 @@ def term_year_key(entry: pd.Series) -> str:
     if not entry['report_type_published']:
         return f'<span style="color: lightcoral">**{yr}:** Report type "{entry["report_type"]}" not published</span>'
 
-    mat_details, mat_style, stg_details, stg_style = _entry_styles(entry)
+    mat_details, mat_style, stg_details, stg_style = _entry_styles(entry, short = True)
     snt = entry['q1_sentiment']
 
     # handle missing / non-numeric sentiment
     if pd.isna(snt):
-        snt_display = "Unclear"
+        snt_display = "  - "
         snt_colour = "#cccccc"
     else:
-        snt_display = snt
+        snt_display = f'{snt}' if snt < 0.0 else f' {snt}'
         try:
             snt_cmap = mpl.colormaps['RdYlGn'].resampled(21)
             snt_colour = mpl.colors.to_hex(snt_cmap((float(snt) + 1) / 2))
         except (TypeError, ValueError):
             snt_colour = "#cccccc"
+    frm = entry['q1_framing']  # either 'opportunity', 'neutral', or 'risk'
+    if pd.isna(frm):
+        frm = "unclear"
+    else:
+        frm_display = {
+            'opportunity': '↗',
+            'neutral': '→',
+            'risk': '↘',
+        }[frm] 
+        frm_colour = {
+            'opportunity': 'green',
+            'neutral': 'grey',
+            'risk': 'red',
+        }[frm]
 
-    key = f'**{yr}:** {snt_display}<span style="color: {snt_colour}">█</span> \t|\t <span style="{stg_style}">{stg_details["alias"]}</span> \t|\t <span style="{mat_style}">{mat_details["alias"]}</span>'
+    key = f'**{yr}:**|{snt_display} <span style="color: {snt_colour}">█</span>{frm_display} \t| <span style="{stg_style}">{stg_details["alias"]}</span> \t| <span style="{mat_style}">{mat_details["alias"]}</span>'
     n_commitments = len(entry['q4_commitments'])
     if n_commitments > 0:
-        key += f' \t|\t {n_commitments} commitment{"s" if n_commitments != 1 else ""}'
-    return key
+        key += f'\t| {n_commitments} commitment{"s" if n_commitments != 1 else ""}'
+    return f'<span style="font-family: monospace; white-space: pre">{key}</span>'
 
 def term_year_analysis(entry: pd.Series, terms: TermCollection, *, return_key: bool = False, lazy_chunks: bool = True) -> mo.Html | tuple[str, mo.Html]:
     '''
@@ -412,7 +421,7 @@ def term_year_analysis(entry: pd.Series, terms: TermCollection, *, return_key: b
     if not entry['report_type_published']:
         out = mo.md(f"> Report type '{entry['report_type']}' not published in {entry['year']}")
         if return_key:
-            out = (term_year_key(entry), out)
+            out = (_term_year_key(entry), out)
         return out
 
     co = entry['company_alias']
@@ -432,26 +441,26 @@ def term_year_analysis(entry: pd.Series, terms: TermCollection, *, return_key: b
             # backup output in case of error
             out = mo.md(f'> <span style="color: lightcoral">Chunks unavailable for {co} {rt} {yr} / {entry["term_alias"]}: {e}</span>')
             if return_key:
-                out = (term_year_key(entry), out)
+                out = (_term_year_key(entry), out)
             return out
 
-    if pd.notna(entry['notes']):
+    if 'notes' in entry and pd.notna(entry['notes']):
         notes = f"> {entry['notes']}"
     else:
-        notes = '> no notes provided'
+        notes = None
 
     # mark all quotes
-    chunks = [mark_quote(chunk, entry['q1_sentiment_quotes'], add_label=' (q1)', colour = COLOUR_SENT) for chunk in chunks]
-    chunks = [mark_quote(chunk, entry['q2_maturity_quotes'], add_label=' (q2)', colour = COLOUR_MAT) for chunk in chunks]
-    chunks = [mark_quote(chunk, entry['q3_stage_quotes'], add_label=' (q3)', colour = COLOUR_STG) for chunk in chunks]
-    chunks = [mark_quote(chunk, entry['q4_commitments'], add_label=' (q4)', colour = COLOR_CMT) for chunk in chunks]
+    chunks = [_mark_quote(chunk, entry['q1_sentiment_quotes'], add_label=' (q1)', colour = COLOUR_SENT) for chunk in chunks]
+    chunks = [_mark_quote(chunk, entry['q2_maturity_quotes'], add_label=' (q2)', colour = COLOUR_MAT) for chunk in chunks]
+    chunks = [_mark_quote(chunk, entry['q3_stage_quotes'], add_label=' (q3)', colour = COLOUR_STG) for chunk in chunks]
+    chunks = [_mark_quote(chunk, entry['q4_commitments'], add_label=' (q4)', colour = COLOR_CMT) for chunk in chunks]
     # and the mentions of the term
-    chunks = [mo.md(mark_term_mentions(chunk, term)) for chunk in chunks]
+    chunks = [mo.md(_mark_term_mentions(chunk, term)) for chunk in chunks]
     n_commitments = len(entry['q4_commitments'])
 
     out =  mo.vstack([
                 mo.vstack([
-                    mo.md(notes),
+                    mo.md(notes) if notes else '',
                     mo.md('---'),
                     mo.hstack([
                         mo.md(f'**Sentiment:** {snt}'),
@@ -462,9 +471,9 @@ def term_year_analysis(entry: pd.Series, terms: TermCollection, *, return_key: b
                     ], justify = 'center')
                 ]),
                 mo.accordion({
-                    f'**Q1. Sentiment** {snt}': quote_stack(entry['q1_sentiment_quotes']),
-                    f'**Q2. Maturity** <span style="{mat_style}">{mat_details["alias"]}</span>': quote_stack(entry['q2_maturity_quotes']),
-                    f'**Q3. Stage** <span style="{stg_style}">{stg_details["alias"]}</span>': quote_stack(entry['q3_stage_quotes']),
+                    f'**Q1. Sentiment** {snt}': _quote_stack(entry['q1_sentiment_quotes']),
+                    f'**Q2. Maturity** <span style="{mat_style}">{mat_details["alias"]}</span>': _quote_stack(entry['q2_maturity_quotes']),
+                    f'**Q3. Stage** <span style="{stg_style}">{stg_details["alias"]}</span>': _quote_stack(entry['q3_stage_quotes']),
                     f'**Q4. Commitments** ({n_commitments})': commitment_accordion(entry['q4_commitments']),
                 }, multiple = True),
                 mo.md('---'),
@@ -474,7 +483,7 @@ def term_year_analysis(entry: pd.Series, terms: TermCollection, *, return_key: b
                 }, lazy = lazy_chunks),
             ])
     if return_key:
-        out = (term_year_key(entry), out)
+        out = (_term_year_key(entry), out)
     return out
 
 def company_report_results(df: pd.DataFrame, company_fname: str, terms: TermCollection, report_type: str, lazy: bool = True) -> mo.Html:
@@ -518,7 +527,7 @@ def company_report_results(df: pd.DataFrame, company_fname: str, terms: TermColl
 
         def make_term_panel(term=term, df_term=df_term):
             year_accordion = {
-                term_year_key(entry): (lambda entry=entry: term_year_analysis(entry, terms, return_key=False))
+                _term_year_key(entry): (lambda entry=entry: term_year_analysis(entry, terms, return_key=False))
                 for entry in (df_term[df_term['year'] == year].iloc[0] for year in df_term['year'].unique()) if entry['term_regex_found']
             }
 
