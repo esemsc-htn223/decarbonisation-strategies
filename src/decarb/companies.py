@@ -1,13 +1,23 @@
-__all__ = ['Company', 'CompanyCollection', 'COMPANIES_ALL', 'COMPANY_ALIASES', 'co_dir_md_files']
+__all__ = [
+    'Company', 'CompanyCollection', 
+    'Report', 'REPORT_TYPES', 'REPORT_TYPES_SHORT', 'REPORT_TYPES_LONG',
+    'COMPANIES_ALL', 'COMPANY_ALIASES', 'COMPANY_COLOURS',
+    'co_files', 'file_metadata'
+]
 
 from dataclasses import dataclass
 import os
 from typing import Iterable, Literal, Union
 import uuid
 import json
+import time
 
-from decarb.util import COMPANIES_DIR, logger, REPORT_TYPES
+from decarb.util import COMPANIES_DIR, logger
 from decarb.terms import Term, TermCollection
+
+REPORT_TYPES = {'annual-report', 'sustainability-report'}
+REPORT_TYPES_SHORT = {'annual-report': 'an', 'sustainability-report': 'sr'}
+REPORT_TYPES_LONG = {'annual-report': 'financial report', 'sustainability-report': 'sustainability report'}
 
 COMPANY_ALIASES = {
         'shell': 'Shell',
@@ -116,6 +126,122 @@ class Report:
         '''Create a Report object from a prompt ID, which is in the format "{company_folder}_{report_type}_{report_name}_{term_folder}_{term.prompt_fname}".'''
         company_folder, report_type, report_name, term_fname = prompt_id.split('_')
         return cls.from_metadata(company_folder, report_type, report_name)
+
+    @classmethod
+    def available_reports(cls, *, 
+                          companies: Union['CompanyCollection', 'Company']|None = None, 
+                          report_types: list[str]|str|None = None) -> list['Report']:
+        '''
+        Get a list of all available reports for the given companies, report types, and years.
+
+        Parameters
+        ----------
+        companies : CompanyCollection or Company or None, optional
+            The companies to filter by. If None, all companies are included. Defaults to None.
+        report_types : str or list[str] or None, optional
+            The report types to filter by. If None, all report types are included. Defaults to None.
+        years : list[str|int] or None, optional
+            The years to filter by. If None, all years are included. Defaults to None.
+        
+        Returns
+        -------
+        list[Report]
+            A list of Report objects matching the given filters.
+        '''
+        if companies is None:
+            companies = COMPANIES_ALL
+        elif isinstance(companies, Company):
+            companies = [companies]
+        elif isinstance(companies, str):
+            companies = [Company.from_folder_name(companies)]
+        elif isinstance(companies, Iterable) and all(isinstance(co, str) for co in companies):
+            companies = [Company.from_folder_name(co) for co in companies]
+        elif not isinstance(companies, CompanyCollection):
+            raise TypeError(f'companies should be a CompanyCollection, a Company, or an iterable of folder names. Got {type(companies)}')
+
+        if report_types is None:
+            report_types = REPORT_TYPES
+        elif isinstance(report_types, str):
+            if report_types not in REPORT_TYPES:
+                raise ValueError(f'report_types should be one of {REPORT_TYPES}. Got {report_types}')
+            report_types = [report_types]
+        elif isinstance(report_types, Iterable):
+            for rt in report_types:
+                if rt not in REPORT_TYPES:
+                    raise ValueError(f'report_types should be one of {REPORT_TYPES}. Got {report_types}')
+
+        reports = []
+        for co in companies:
+            for report_type in report_types:
+                for report in co.reports(report_type=report_type, errors='ignore'):
+                    reports.append(report)
+
+        return reports
+
+    @classmethod
+    def missing_reports(cls, *, companies: Union['CompanyCollection', 'Company']|None = None, 
+                              report_types: list[str]|str|None = None, 
+                              max_year: str|int|None = None, min_year: str|int|None = None) -> dict:
+        '''
+        Find all reports that are missing for the given companies and report types.
+
+        Parameters
+        ----------
+        companies : Union['CompanyCollection', 'Company'] | None
+            The companies to check for missing reports. If None, all companies are checked.
+        report_types : list[str] | str | None
+            The report types to check for missing reports. If None, all report types are checked.
+        max_year : str | int | None
+            The maximum year to check for missing reports. If None, the maximum year is set to the current year.
+        min_year : str | int | None
+            The minimum year to check for missing reports. If None, the minimum year is set to the earliest year present in the data.
+
+        Returns
+        -------
+        dict
+            A dictionary with company folder names as keys, and values being dictionaries with report types as keys and lists of missing years as values.
+        '''
+
+        available = cls.available_reports(companies = companies, report_types = report_types)
+        if min_year is None:
+            min_year = min(int(r.year) for r in available)
+        if max_year is None:
+            max_year = time.localtime().tm_year
+
+        if companies is None:
+            companies = COMPANIES_ALL
+        elif isinstance(companies, Company):
+            companies = [companies]
+        elif isinstance(companies, str):
+            companies = [Company.from_folder_name(companies)]
+        elif isinstance(companies, Iterable) and all(isinstance(co, str) for co in companies):
+            companies = [Company.from_folder_name(co) for co in companies]
+        elif not isinstance(companies, CompanyCollection):
+            raise TypeError(f'companies should be a CompanyCollection, a Company, or an iterable of folder names. Got {type(companies)}')
+
+        if report_types is None:
+            report_types = REPORT_TYPES
+        elif isinstance(report_types, str):
+            if report_types not in REPORT_TYPES:
+                raise ValueError(f'report_types should be one of {REPORT_TYPES}. Got {report_types}')
+            report_types = [report_types]
+        elif isinstance(report_types, Iterable):
+            for rt in report_types:
+                if rt not in REPORT_TYPES:
+                    raise ValueError(f'report_types should be one of {REPORT_TYPES}. Got {report_types}')
+
+
+        missing = {}
+
+        for co in companies:
+            missing[co.folder_name] = {}
+            for report_type in report_types:
+                missing[co.folder_name][report_type] = []
+                for year in range(min_year, max_year + 1):
+                    if not any(int(r.year) == year and r.report_type == report_type and r.company == co for r in available):
+                        missing[co.folder_name][report_type].append(year)
+
+        return missing
 
     def __format__(self, format_spec):
         if format_spec == 'name':
@@ -485,6 +611,11 @@ class Company:
 
     def __hash__(self):
         return hash(self.folder_name)
+
+    def __eq__(self, other):
+        if isinstance(other, Company):
+            return self.folder_name == other.folder_name
+        return False
 
 class CompanyCollection:
     def __init__(self, companies: Iterable[Company]|Iterable[str]):

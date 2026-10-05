@@ -7,8 +7,7 @@ import altair as alt
 import tiktoken
 
 from decarb.terms import Term, TermCollection, TERMS_ALL
-from decarb.companies import COMPANY_ALIASES, COMPANIES_ALL, CompanyCollection
-from decarb.util import REPORT_TYPES_LONG
+from decarb.companies import COMPANY_ALIASES, COMPANIES_ALL, CompanyCollection, REPORT_TYPES_LONG
 
 __all__ = [
     'regex_mentions', 'regex_rankings', 'regex_comparison',

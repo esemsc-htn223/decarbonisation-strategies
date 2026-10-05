@@ -16,9 +16,9 @@ import pandas as pd
 import numpy as np
 import re
 
-from decarb.companies import Company, CompanyCollection, Report, file_metadata, co_files
+from decarb.companies import Company, CompanyCollection, Report, file_metadata, co_files, REPORT_TYPES_LONG
 from decarb.terms import Term, TermCollection
-from decarb.util import OUT_DIR, REPORT_TYPES_LONG, logger_llm, TERMS_DIR, BASE_DIR, resolve_path
+from decarb.util import OUT_DIR, logger_llm, TERMS_DIR, BASE_DIR, resolve_path
 
 DEFAULT_MODEL = 'gpt-5.1'
 

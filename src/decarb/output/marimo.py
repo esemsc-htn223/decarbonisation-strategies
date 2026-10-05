@@ -14,8 +14,7 @@ import os
 from typing import Literal
 import pandas as pd
 
-from decarb.companies import Report, COMPANY_ALIASES
-from decarb.util import REPORT_TYPES_LONG
+from decarb.companies import Report, COMPANY_ALIASES, REPORT_TYPES_LONG
 from decarb.terms import (
     Term, TermCollection, TERMS_ALL
 )

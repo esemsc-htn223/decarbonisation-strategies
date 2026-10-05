@@ -11,8 +11,8 @@ from decarb.llm.prompt import (
     Job,
     DEFAULT_MODEL,
 )
-from decarb.companies import Company, COMPANIES_ALL, CompanyCollection, co_files
-from decarb.util import REPORT_TYPES, logger_llm
+from decarb.companies import Company, COMPANIES_ALL, CompanyCollection, co_files, REPORT_TYPES
+from decarb.util import logger_llm
 from decarb.terms import TermCollection, TERMS_ALL
 
 def stage_convert(cos: Company|CompanyCollection = COMPANIES_ALL, report_types: Iterable[str]|str = REPORT_TYPES,

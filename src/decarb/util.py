@@ -77,10 +77,6 @@ def tidy_md(md:str):
     return tidy_md
 
 
-REPORT_TYPES = {'annual-report', 'sustainability-report'}
-REPORT_TYPES_SHORT = {'annual-report': 'an', 'sustainability-report': 'sr'}
-REPORT_TYPES_LONG = {'annual-report': 'financial report', 'sustainability-report': 'sustainability report'}
-
 logger = logging.getLogger('analysis')
 logger.setLevel(logging.DEBUG)
 logger_fh = logging.FileHandler(os.path.join(LOG_DIR, 'analysis.log'))
