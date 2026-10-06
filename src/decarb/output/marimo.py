@@ -498,7 +498,7 @@ def company_report_results(df: pd.DataFrame, company_fname: str, terms: TermColl
     terms : TermCollection
         The collection of terms used in the analysis.
     report_type : str
-        The report type to analyse. Should be one of the recognised report types, as in the keys of `util.REPORT_TYPES_LONG`.
+        The report type to analyse. Should be one of the recognised report type folder names (see `companies.REPORT_TYPES`).
 
     Returns
     -------
