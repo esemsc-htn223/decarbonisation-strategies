@@ -1,6 +1,6 @@
 __all__ = [
     'Company', 'CompanyCollection', 
-    'Report', 'REPORT_TYPES', 'REPORT_TYPES_SHORT', 'REPORT_TYPES_LONG',
+    'Report', 'REPORT_TYPES', 
     'COMPANIES_ALL', 'COMPANY_ALIASES', 'COMPANY_COLOURS',
     'co_files', 'file_metadata'
 ]
@@ -15,9 +15,18 @@ import time
 from decarb.util import COMPANIES_DIR, logger
 from decarb.terms import Term, TermCollection
 
-REPORT_TYPES = {'annual-report', 'sustainability-report'}
-REPORT_TYPES_SHORT = {'annual-report': 'an', 'sustainability-report': 'sr'}
-REPORT_TYPES_LONG = {'annual-report': 'financial report', 'sustainability-report': 'sustainability report'}
+REPORT_TYPES = {
+    'annual-report', 
+    'sustainability-report'
+}
+REPORT_TYPES_SHORT = {
+    'annual-report': 'an', 
+    'sustainability-report': 'sr'
+}
+REPORT_TYPES_LONG = {
+    'annual-report': 'financial report', 
+    'sustainability-report': 'sustainability report'
+}
 
 COMPANY_ALIASES = {
         'shell': 'Shell',
@@ -25,7 +34,7 @@ COMPANY_ALIASES = {
         'exxon': 'ExxonMobil',
         'chevron': 'Chevron',
         'total': 'TotalEnergies',
-        'eni': 'Eni'
+#        'eni': 'Eni'
     }
 
 COMPANY_COLOURS = {
@@ -34,7 +43,7 @@ COMPANY_COLOURS = {
     'exxon': '#FF0000',
     'chevron': "#9BDAFF",
     'total': "#E69AFF",
-    'eni': "#FFA500"
+#    'eni': "#FFA500"
 }
 
 class Report:
@@ -767,7 +776,7 @@ def co_files(
         raise ValueError(f"yield_level must be one of 'Report', 'report_folder', 'report_pdf', 'report_md', 'chunk_folder', or 'chunk'. Got {yield_level}")
     
     if companies is None:
-        companies = [co for co in os.listdir(COMPANIES_DIR) if os.path.isdir(os.path.join(COMPANIES_DIR, co))]
+        companies = COMPANIES_ALL
     else:
         if isinstance(companies, Company):
             companies = [companies.folder_name]
@@ -782,7 +791,7 @@ def co_files(
                 raise ValueError(f'report_types should be a subset of {REPORT_TYPES}. Got {report_types}')
 
     for co in companies:
-        co_dir = os.path.join(COMPANIES_DIR, co)
+        co_dir = co.folder if isinstance(co, Company) else os.path.join(COMPANIES_DIR, co)
         if not os.path.isdir(co_dir):
             continue
         for report_type in report_types:
