@@ -7,6 +7,7 @@ license = "MIT"
 description = "A project to analyse the evolution of decarbonisation strategies using LLMs and RAG techniques."
 readme = "README.md"
 keywords = ["decarbonisation", "LLM", "RAG", "corporate sustainability", "climate change"]
+dependencies = ["vera-s1>=0.1.3,<0.2"]
 
 [tool.pixi.workspace]
 channels = ["conda-forge"]
@@ -35,6 +36,8 @@ statsmodels = ">=0.14.6,<0.15"
 transformers = ">=5.16.1,<6"
 pytorch-cpu = ">=2.13.0,<3"
 datasets = ">=4.8.5,<5"
+scikit-learn = ">=1.9.1,<2"
+sentence-transformers = ">=6.1.0,<7"
 
 [tool.pixi.pypi-dependencies]
 pymupdf4llm = ">=1.28.0, <2"
