@@ -10,6 +10,7 @@ from decarb.llm.prompt import (
     construct_prompt,
     Job,
     DEFAULT_MODEL,
+    RESPONSE_SCHEMAS
 )
 from decarb.companies import Company, COMPANIES_ALL, CompanyCollection, co_files, REPORT_TYPES
 from decarb.util import logger_llm
@@ -186,6 +187,7 @@ def stage_search(terms: TermCollection=TERMS_ALL,
         print('search complete')
 
 def stage_draft(terms: TermCollection=TERMS_ALL, *, 
+                schema_version: int = 1,
                 overlap_strategy: Literal["before", "after", "both", ]|None = 'both',
                 overlap_amount: float = 0.2,
                 max_extracts: int|None = None,
@@ -199,11 +201,24 @@ def stage_draft(terms: TermCollection=TERMS_ALL, *,
     ----------
     terms : TermCollection
         The collection of terms to draft prompts for.
+    schema_version : int
+        The schema version to use for the prompts. Must be one of the available schema versions. Defaults to 1.
+    overlap_strategy : ["before", "after", "both"] | None
+        The strategy to use for overlapping chunks when drafting prompts. Defaults to 'both'.
+    overlap_amount : float
+        The fraction of the chunk to overlap when drafting prompts. Defaults to 0.2.
+    max_extracts : int | None
+        The maximum number of extracts to include in each prompt. If None, includes all extracts.
+    mask : bool
+        Whether to mask references to the company and year in the prompt. Defaults to False.
     overwrite : bool
-        Whether to overwrite existing prompt files. Defaults to False.
+        Whether to overwrite existing prompt files. If using a new schema, set to True. Defaults to False.
     progress_bar : bool
         Whether to display a progress bar. Defaults to True.
     '''
+
+    if schema_version not in RESPONSE_SCHEMAS:
+        raise ValueError(f'Invalid schema_version: {schema_version}. Must be one of {list(RESPONSE_SCHEMAS.keys())}')
 
     skip_counter = 0
     with tqdm(total=sum(1 for _ in co_files(yield_level='chunk_folder'))*len(terms), desc="Drafting prompts", disable=not progress_bar, bar_format='{desc}: {bar} {n}/{total}') as pbar:
@@ -238,9 +253,10 @@ def stage_draft(terms: TermCollection=TERMS_ALL, *,
                     pbar.update(1)
                     continue
                 term = terms[term_alias]
-                logger_llm.debug(f'CONSTRUCTING PROMPT for {report:full} - {term_alias}. Saving to {report.prompt_path(terms, term)}')
+                logger_llm.debug(f'CONSTRUCTING PROMPT for {report:full} - {term_alias}. Saving to {report._prompt_path(terms, term, schema_version)}')
                 construct_prompt(
                     report=report, term=term,
+                    schema_version=schema_version,
                     overlap_strategy=overlap_strategy, overlap_amount=overlap_amount,
                     max_extracts=max_extracts, mask=mask,
                     save=True, overwrite=overwrite
@@ -251,6 +267,7 @@ def stage_draft(terms: TermCollection=TERMS_ALL, *,
         print('prompts drafted')
         
 def stage_submit(model: str = DEFAULT_MODEL, *,
+                 schema_version: int = 1,
                  portion_strategy: Literal['max_tokens', 'max_prompts', 'split_into_n'] = 'max_tokens',
                  max_tokens: int = 900_000, max_prompts: int = 100, split_into_n: int = 10,
                  encoding: str = 'o200k_base',
@@ -269,6 +286,8 @@ def stage_submit(model: str = DEFAULT_MODEL, *,
     ----------
     model : str
         The name of the LLM model to use for analysis. Defaults to "gpt-5.1".
+    schema_version : int
+        The response schema version to use for the prompts. Must be one of the available schema versions. Defaults to 1.
     portion_strategy : str
         The strategy to use for splitting the prompts into batches. Defaults to 'max_tokens'.
     max_tokens : int
@@ -306,7 +325,13 @@ def stage_submit(model: str = DEFAULT_MODEL, *,
     ------
     ValueError
         If `terms` is neither a TermCollection nor None.
+    ValueError
+        If `schema_version` is not one of the available schema versions.
     '''
+
+    if schema_version not in RESPONSE_SCHEMAS:
+        raise ValueError(f'Invalid schema_version: {schema_version}. Must be one of {list(RESPONSE_SCHEMAS.keys())}')
+    
     # collect all prompt file paths. assuming all text files are to be analysed.
     file_paths = []
     for report in co_files(yield_level='Report', companies=cos):
@@ -321,9 +346,9 @@ def stage_submit(model: str = DEFAULT_MODEL, *,
             if report.prompts_dir(term_coll_folder) is None:
                 continue
             for prompt_file in os.listdir(report.prompts_dir(term_coll_folder)):
-                if prompt_file.endswith('.txt'):
-                    file_paths.append(report.prompt_path(term_coll_folder, prompt_file))
-    logger_llm.info(f'COLLECTED PROMPTS: terms={terms} {len(file_paths)} prompt files found in .{len(list(co_files(yield_level="Report", companies=cos)))} reports.')
+                if prompt_file.endswith(f'_v{schema_version}.txt'):
+                    file_paths.append(report.prompt_path(term_coll_folder, prompt_file, schema_version))
+    logger_llm.info(f'COLLECTED PROMPTS: terms={terms}, schema_version={schema_version}, {len(file_paths)} prompt files found in .{len(list(co_files(yield_level="Report", companies=cos)))} reports.')
 
     job = Job.from_prompts(file_paths, model=model, overwrite=overwrite)
     job.submit(

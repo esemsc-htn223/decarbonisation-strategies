@@ -5,7 +5,7 @@ import os
 from dotenv import load_dotenv
 from openai import OpenAI, NotFoundError
 from openai.types import Batch
-from pydantic import BaseModel, Field
+from pydantic import BaseModel
 import instructor
 import json
 import time
@@ -19,6 +19,7 @@ import re
 from decarb.companies import Company, CompanyCollection, Report, file_metadata, co_files, REPORT_TYPES_LONG
 from decarb.terms import Term, TermCollection
 from decarb.util import OUT_DIR, logger_llm, TERMS_DIR, BASE_DIR, resolve_path
+from decarb.llm.schemas import RESPONSE_SCHEMAS
 
 DEFAULT_MODEL = 'gpt-5.1'
 
@@ -45,10 +46,10 @@ COMPANY_PATTERNS = {
     'eni': r'\bEni\b|\bAgip\b',
     'total': r'\bTotalEnergies\b|\bTotal\s+E&P\b|\bTotal\s+S\.A\.|\bElf\b|\bFina\b',  # can't do just 'Total'
 }
-MASK_TOKEN = 'the Company'
+MASK_TOKEN = 'the company'
 
 
-def mask_entities(text: str, company: Company | str = None) -> str:
+def mask_entities(text: str) -> str:
     '''
     Replace company and brand names in a piece of text with a neutral placeholder.
 
@@ -60,13 +61,11 @@ def mask_entities(text: str, company: Company | str = None) -> str:
     ----------
     text : str
         The text to mask.
-    company : Company or str, optional
-        The company the text belongs to. Unused, and accepted only so callers can pass it.
 
     Returns
     -------
     str
-        The text with every recognised company or brand name replaced by "the Company".
+        The text with every recognised company or brand name replaced by "the company".
     '''
     for pattern in COMPANY_PATTERNS.values():
         text = re.sub(pattern, MASK_TOKEN, text, flags=re.I)
@@ -146,7 +145,7 @@ def construct_extracts(
             extract = extract + "\n\n" + ' '.join(next_chunk.split()[:overlap_len])
 
         if mask:
-            extract = mask_entities(extract, report.company)
+            extract = mask_entities(extract)
 
         header = f"# Extract {i+1} (section {chunk_ind} / {n_chunks}):\n\n"
         
@@ -154,80 +153,20 @@ def construct_extracts(
     
     return "\n\n------------------\n\n".join(extracts), len(extracts), n_total
 
-def construct_prompt(
-        report:Report, term:Term,
-        *,
-        #company:str|Company, report_type:str, year:int|str, term:str|Term, 
-        #chunks:Iterable[str], chunk_inds:Iterable[int], 
-        overlap_strategy:Literal["before", "after", "both", ]|None = None,
-        overlap_amount:float = 0.2,
-        max_extracts:int|None = None,
-        mask:bool = False,
-        save:bool = True,
-        save_as:str|None = None,
-        overwrite:bool = False
-):
-    '''
-    Construct a prompt to pass to the LLM, including task description and the relevant extracts.
-    
-    Parameters
-    ----------
-    report : Report
-        The Report object containing the chunks to construct the extracts from, and the search results for the given term.
-    term : Term
-        The Term object containing the alias to use to retrieve the search results for the given term from the report.
-    overlap_strategy : Literal["before", "after", "both", ]|None, optional
-        Whether to include text from the preceeding or following chunk for each extract, or both.
-        This is to provide additional context to the LLM, as sometimes relevant information may be split across chunk boundaries.
-        If None (the default), no additional context will be included.
-    overlap_amount : float, optional
-        The amount of text to include from the adjacent chunk(s), as a proportion of the chunk.
-        Defaults to 0.2 (i.e., a fifth of the adjacent chunk(s)). Only has an effect if overlap_strategy is not None.
-    save : bool, optional
-        Whether to save the constructed prompt as a text file in the report's term directory (or at the path specified by `save_as` if provided). Defaults to True.
-    save_as : str or None, optional
-        The path at which to save the constructed prompt. If None (the default), the prompt will be saved in the report's term directory. Only has an effect if `save` is True.
-    overwrite : bool, optional
-        Whether to overwrite an existing file at the save path. Defaults to False.
 
-    Returns
-    -------
-    str
-        The constructed prompt, as a string.
-    '''
-    save_path = report._prompt_path(term.collection, term) if save_as is None else save_as
-    if not save_path.endswith('.txt'):
-        raise ValueError(f'save_as should be a path ending with .txt. Got {save_path}')
- 
-    co_alias = report.company.full_name
-    co_ref = 'the company' if mask else co_alias   # used in the question text, which names the firm
-    year = report.year    
-    report_alias = REPORT_TYPES_LONG.get(report.report_type, report.report_type.replace('-', ' '))
-    
-    chunks_str, n_used, n_available = construct_extracts(
-        report=report, term=term,
-        overlap_strategy=overlap_strategy, overlap_amount=overlap_amount,
-        max_extracts=max_extracts, mask=mask
-    )
-
+def _prompt_task_v1(term:Term, *, co_alias:str, co_ref:str, year:int, mask:bool) -> str:
+    '''Task text for schema version 1 (PromptResponseV1): sentiment, TRL, commercial stage and commitments.'''
     if mask:
-        # no company or year in the preamble: naming them anchors the answer on the model's priors
-        preamble = (f"The following extracts have been taken from the annual reporting of an energy "
-                    f"company and all relate to {term.prompt_alias}.")
         basis = (f"Use these extracts to answer the following questions. Base your answers only on the extracts, "
                  f"not on any other information you may have about this company or about "
                  f"{term.prompt_alias}. Answers must be evidenced by direct quotes from the extracts, along\n"
                  f"with a justification of why each quote is relevant.")
     else:
-        preamble = (f"The following extracts have been taken from {co_alias}'s {year} {report_alias} "
-                    f"and all relate to {term.prompt_alias}.")
         basis = (f"Use these extracts to answer the following questions. Base your answers only on the extracts, not on any other information you may \n"
                  f"have about {co_alias}'s use of {term.prompt_alias} in {year}. Answers must be evidenced by direct quotes from the extracts, along\n"
                  f"with a justification of why each quote is relevant.")
 
-    prompt = f'''{preamble}
-
-{basis}
+    return f'''{basis}
 
 # Questions:
 1. "How positive or negative is the overall sentiment towards {term.prompt_alias}? 
@@ -257,13 +196,135 @@ Choose from:
 
 4. "What commitments has {co_ref} made towards {term.prompt_alias}?
 Provide a list of commitments, flagging commitments that include specific measurable targets as verifiable."
+'''
 
+
+def _prompt_task_v2(term:Term, *, co_ref:str, year:int, mask:bool) -> str:
+    '''
+    Task text for schema version 2 (PromptResponseV2, built per term with build_extraction_model).
+    Deliberately short: field definitions live in the response schema, so this only covers what the
+    schema cannot: the scope of an action, de-duplication, evidence rules and how to resolve dates.
+    '''
+    tech = term.prompt_alias
+    if mask:
+        timing = ("The year of the report is not given. Where timing is only relative (e.g. 'next year'), "
+                  "leave the year fields null and record the phrase in timing_text.")
+    else:
+        timing = (f"The report is for {year}. Resolve relative timing (e.g. 'next year', 'over the next five "
+                  f"years') against {year}.")
+
+    return f'''Extract every action {co_ref} reports or announces concerning {tech}, and record its overall stance towards {tech}. Follow the field descriptions in the response schema.
+
+- An action is something the company itself (including its subsidiaries and joint ventures) has done, is doing, or has committed or planned to do. Include past actions the report mentions as well as new ones, and actions that cover {tech} in conjunction with other technologies.
+- Do not record general statements about {tech}, or the actions of governments, other companies or the industry as a whole, as actions. Statements about {tech}'s role or prospects, or about the company's strategy towards it, belong in the stance.
+- Record each distinct action once, combining every extract that refers to it.
+- Use only the extracts, not anything else you know about the company or {tech}. Copy quotes exactly as they appear in the extracts.
+- {timing}
+- The extracts were found by keyword search, so some may not discuss {tech}. Take nothing from them and list them in off_topic_extracts.
+- If there are no actions, return an empty list.'''
+
+
+def construct_prompt(
+        report:Report, term:Term,
+        *,
+        schema_version:int = 1,
+        overlap_strategy:Literal["before", "after", "both", ]|None = None,
+        overlap_amount:float = 0.2,
+        max_extracts:int|None = None,
+        mask:bool = False,
+        save:bool = True,
+        save_as:str|None = None,
+        overwrite:bool = False
+):
+    '''
+    Construct a prompt to pass to the LLM, including task description and the relevant extracts.
+
+    Parameters
+    ----------
+    report : Report
+        The Report object containing the chunks to construct the extracts from, and the search results for the given term.
+    term : Term
+        The Term object containing the alias to use to retrieve the search results for the given term from the report.
+    schema_version : int, optional
+        Which response schema the prompt is written for. 1 (the default) gives the original questions,
+        answered with PromptResponseV1. 2 gives the action-extraction task, answered with the
+        PromptResponseV2 model built for this term by build_extraction_model(term.alias, term.variants).
+        The v2 prompt relies on the schema's field descriptions, so it must be sent with that schema.
+    overlap_strategy : Literal["before", "after", "both", ]|None, optional
+        Whether to include text from the preceeding or following chunk for each extract, or both.
+        This is to provide additional context to the LLM, as sometimes relevant information may be split across chunk boundaries.
+        If None (the default), no additional context will be included.
+    overlap_amount : float, optional
+        The amount of text to include from the adjacent chunk(s), as a proportion of the chunk.
+        Defaults to 0.2 (i.e., a fifth of the adjacent chunk(s)). Only has an effect if overlap_strategy is not None.
+    max_extracts : int or None, optional
+        The maximum number of extracts to include, passed to `construct_extracts`. If None (the
+        default), every matching chunk is included.
+    mask : bool, optional
+        Whether to replace company names with a neutral placeholder and leave the company and year
+        out of the task text. Defaults to False.
+    save : bool, optional
+        Whether to save the constructed prompt as a text file in the report's term directory (or at the path specified by `save_as` if provided). Defaults to True.
+    save_as : str or None, optional
+        The path at which to save the constructed prompt. If None (the default), the prompt will be saved in the report's term directory.
+        For schema versions after 1, the default filename gets a '.v{schema_version}' suffix before '.txt', so prompts for
+        different versions do not overwrite (or, with overwrite=False, silently stand in for) each other. Only has an effect if `save` is True.
+    overwrite : bool, optional
+        Whether to overwrite an existing file at the save path. Defaults to False.
+
+    Returns
+    -------
+    str
+        The constructed prompt, as a string.
+
+    Raises
+    ------
+    ValueError
+        If schema_version is not one of RESPONSE_SCHEMAS, or the save path does not end with .txt.
+    '''
+    if schema_version not in RESPONSE_SCHEMAS:
+        raise ValueError(f'schema_version should be one of {list(RESPONSE_SCHEMAS.keys())}. Got {schema_version}')
+
+    if save_as is None:
+        save_path = report._prompt_path(term.collection, term, schema_version)
+    else:
+        save_path = save_as
+    if not save_path.endswith('.txt'):
+        raise ValueError(f'save_as should be a path ending with .txt. Got {save_path}')
+
+    co_alias = report.company.full_name
+    co_ref = MASK_TOKEN if mask else co_alias
+    year = report.year
+    report_alias = REPORT_TYPES_LONG.get(report.report_type, report.report_type.replace('-', ' '))
+
+    chunks_str, n_used, n_available = construct_extracts(
+        report=report, term=term,
+        overlap_strategy=overlap_strategy, overlap_amount=overlap_amount,
+        max_extracts=max_extracts, mask=mask
+    )
+
+    if mask:
+        # no company or year in the preamble: naming them anchors the answer on the model's priors
+        preamble = (f"The following extracts have been taken from the annual reporting of an energy "
+                    f"company and all relate to {term.prompt_alias}.")
+    else:
+        preamble = (f"The following extracts have been taken from {co_alias}'s {year} {report_alias} "
+                    f"and all relate to {term.prompt_alias}.")
+
+    if schema_version == 1:
+        task = _prompt_task_v1(term, co_alias=co_alias, co_ref=co_ref, year=year, mask=mask)
+    else:
+        task = _prompt_task_v2(term, co_ref=co_ref, year=year, mask=mask)
+
+    prompt = f'''{preamble}
+
+{task}
 
 # Extracts:
 -----------
 {chunks_str}'''
-    
-    logger_llm.debug(f'PROMPT CONSTRUCTED: {co_alias}_{report_alias}_{year}_{term.prompt_fname.replace(".txt", "")} - overlap_strategy={overlap_strategy}, overlap_amount={overlap_amount}, mask={mask}, extracts={n_used}/{n_available}')
+
+    logger_llm.debug(f'PROMPT CONSTRUCTED: {co_alias}_{report_alias}_{year}_{term.prompt_fname.replace(".txt", "")} - schema_version={schema_version}, overlap_strategy={overlap_strategy}, overlap_amount={overlap_amount}, mask={mask}, extracts={n_used}/{n_available}')
     if save:
         fname = os.path.basename(save_path)
         if os.path.exists(save_path) and not overwrite:
@@ -275,64 +336,9 @@ Provide a list of commitments, flagging commitments that include specific measur
             logger_llm.debug(f'PROMPT SAVED: {fname} at {save_path}')
     else:
         logger_llm.debug(f'PROMPT NOT SAVED: save=False.')
-    
+
     return prompt
 
-class QuoteEvidence(BaseModel):
-    quote: str = Field(description="Direct quote from the source text")
-    justification: str = Field(description="Explanation of why this quote is relevant as evidence")
-
-class Commitment(BaseModel):
-    commitment: str = Field(description="A commitment made by the company towards the technology")
-    quote: str = Field(description="Direct quote from the source text evidencing the commitment")
-    justification: str = Field(description="Explanation of how the quote evidences the commitment")
-    verifiable: bool = Field(description="True if the commitment includes specific, measurable targets. False if the commitment is aspirational or qualitative only.")
-
-class PromptResponse(BaseModel):
-    # Structured decoding emits fields in schema order, so each question's quotes are declared
-    # before its answer: the model gathers its evidence, then scores against it.
-
-    # Question 1: "How positive or negative is the overall sentiment towards {term.prompt_alias}?"
-    q1_sentiment_quotes: list[QuoteEvidence] = Field(
-        default=[],
-        description="Quotes reflecting sentiment towards the technology and a justification for their inclusion. q1_sentiment must use these quotes to assign a sentiment score."
-    )
-    q1_sentiment: float | None = Field(
-        default=None,
-        description="Question 1: Sentiment towards the technology, on a scale from -1 (totally negative) to 1 (totally positive), based on the quotes given in q1_sentiment_quotes",
-        ge=-1.0, le=1.0
-    )
-    q1_framing: Literal["opportunity", "neutral", "risk"] = Field(
-        default="neutral",
-        description="Question 1b: Whether the extracts frame the technology as a commercial opportunity for the company, as a risk or threat to it, or neither. Based on the quotes given in q1_sentiment_quotes."
-    )
-
-    # Question 2: "How mature is {term.prompt_alias} framed to be, in terms of Techonology Readiness Levels?"
-    q2_maturity_quotes: list[QuoteEvidence] = Field(
-        default=[],
-        description="Quotes reflecting the Technology Readiness Level (TRL) of the technology and a justification for their inclusion. q2_maturity must use these quotes to assign a TRL."
-    )
-    q2_maturity: int | None = Field(
-        default=None,
-        description="Question 2: The Technology Readiness Level (TRL) of the technology as framed in the extracts, 1-9, based on the quotes given in q2_maturity_quotes. Definitions provided in the prompt. Null if insufficient information is available to assign a TRL.",
-        ge=1, le=9
-    )
-
-    # Question 3: "What stage of commercialisation is {term.prompt_alias} at within the company's operations?"
-    q3_stage_quotes: list[QuoteEvidence] = Field(
-        default=[],
-        description="Quotes reflecting the technology's stage of commercialisation within the company's operations and a justification for their inclusion. q3_stage must use these quotes to assign a stage."
-    )
-    q3_stage: Literal["research and development", "pilot", "demonstration", "commercial-deployment", "phasing-out", "unclear"] = Field(
-        default="unclear",
-        description="Question 3: The technology's stage of commercialisation within the company's operations, based on the quotes given in q3_stage_quotes."
-    )
-
-    # Question 4: "What commitments does the company make towards {term.prompt_alias}?"
-    q4_commitments: list[Commitment] = Field(
-        default=[],
-        description="Question 4: Commitments made towards the technology."
-    )
 
 
 class AnalysisRecord(BaseModel):
@@ -340,7 +346,8 @@ class AnalysisRecord(BaseModel):
     report_type: Literal["annual-report", "sustainability-report"]
     year: int
     term: str
-    response: PromptResponse
+    schema_version: int
+    response: BaseModel  # PromptResponseVx
 
     @property
     def custom_id(self) -> str:
@@ -388,9 +395,87 @@ def make_strict_schema(schema: dict) -> dict:
             make_strict_schema(value)
     return schema
 
+def schema_depends_on_term(schema_version:int) -> bool:
+    '''
+    Check if the given schema version depends on a specific term (i.e., requires a Term object to build the schema).
+    
+    Parameters
+    ----------
+    schema_version : int
+        The schema version to check. Must be one of RESPONSE_SCHEMAS.
+
+    Returns
+    -------
+    bool
+        True if the schema version depends on a specific term, False otherwise.
+
+    Raises
+    ------
+    ValueError
+        If the schema_version is not one of RESPONSE_SCHEMAS.
+    '''
+    if schema_version not in RESPONSE_SCHEMAS:
+        raise ValueError(f'schema_version should be one of {list(RESPONSE_SCHEMAS.keys())}. Got {schema_version}')
+    
+    schema = RESPONSE_SCHEMAS[schema_version]
+    return not issubclass(schema, BaseModel)  # if not a BaseModel, it must be built per term
+
+def get_schema(schema_version:int, term:Term|None = None, prompt_path:str|None = None) -> type[BaseModel]:
+    '''
+    Get the Pydantic model for the given schema version, optionally built for a specific term.
+    
+    Parameters
+    ----------
+    schema_version : int
+        The schema version to retrieve. Must be one of RESPONSE_SCHEMAS.
+    term : Term | None, optional
+        The term to build the schema for, if required by the schema version. If None (the default),
+        the schema will be returned without being built for a specific term.
+    prompt_path : str | None, optional
+        The path to the prompt file, used to infer the term if it is not provided. Only required if 
+        the schema version depends on the term (e.g., PromptResponseV2) and term is None. 
+        If provided, the term will be inferred from the prompt file name.
+        Must be in the format: `.../{term_collection}/prompts/{term_prompt_fname}` - for
+        custom file locations, pass the Term object directly to `term` instead of relying on inference.
+
+    Returns
+    -------
+    type[BaseModel]
+        The Pydantic model corresponding to the specified schema version and term.
+
+    Raises
+    ------
+    ValueError
+        If the schema_version is not one of RESPONSE_SCHEMAS, or if a term is required but not provided.
+    '''
+    if schema_version not in RESPONSE_SCHEMAS:
+        raise ValueError(f'schema_version should be one of {list(RESPONSE_SCHEMAS.keys())}. Got {schema_version}')
+    
+    schema = RESPONSE_SCHEMAS[schema_version]
+    if not issubclass(schema, BaseModel):
+        if term is None:
+            # assume given file is in the expected location
+            if prompt_path is None:
+                raise ValueError('prompt_path is required when term is None')
+            term_prompt_fname = os.path.basename(prompt_path)
+            term_collection_name = os.path.join(term_prompt_fname, '..', '..')  # format is .../{term_collection}/prompts/{term_prompt_fname}
+            try:
+                term = TermCollection.from_folder(term_collection_name)[term_prompt_fname]
+            except Exception as e:
+                raise ValueError(f'Term required but could not be inferred from prompt file {prompt_path}. Pass a valid Term object to term. Error: {e}')
+        try:
+            schema = schema(term)  # v2 requires building per term
+        except Exception as e:
+            raise ValueError(f'Failed to build schema for term {term}. Ensure term is a Term object. Error: {e}')
+    
+    return schema
+
+
 def analyse_one(
         prompt_file:str, 
         *, 
+        schema_version:int = 1,
+        term:Term|None = None,
         model:str = DEFAULT_MODEL, max_retries:int = 3,
         save_path:str|None = None, overwrite:bool = False
 ) -> AnalysisRecord:
@@ -401,6 +486,12 @@ def analyse_one(
     ----------
     prompt_file : str
         The path of the prompt file.
+    schema_version : int, optional
+        The schema version to use for the response. Defaults to 1 (PromptResponseV1). Must be one of RESPONSE_SCHEMAS.
+    term : Term | None, optional
+        The term the extracts relate to, as a Term object. 
+        Only required if the schema version depends on the term (e.g., PromptResponseV2).
+        If None (the default), the term will be inferred from the prompt file name.
     model : str, optional
         The model to use for analysis. Defaults to 'gpt-5.1'.
     max_retries : int, optional
@@ -415,6 +506,9 @@ def analyse_one(
     AnalysisRecord
         The analysis results, as an AnalysisRecord object.
     '''
+    if schema_version not in RESPONSE_SCHEMAS:
+        raise ValueError(f'schema_version should be one of {list(RESPONSE_SCHEMAS.keys())}. Got {schema_version}')
+
     load_dotenv()
     client = instructor.from_openai(OpenAI())
 
@@ -424,9 +518,11 @@ def analyse_one(
     else:
         raise ValueError(f'prompt_file should be a path to a text file containing the prompt. Got {prompt_file}')
 
+    schema = get_schema(schema_version=schema_version, term=term, prompt_path=prompt_file)
+
     response = client.chat.completions.create(  # chat completions only allows single prompts - fine for this application
         model=model,
-        response_model=PromptResponse,
+        response_model=schema,
         messages=[{"role":"user", "content": prompt_content}],
         max_retries=max_retries
     )
@@ -441,6 +537,7 @@ def analyse_one(
         report_type=file_mdata['report_type'],
         year=year,
         term=term,
+        schema_version=schema_version,
         response=response
     )
 
@@ -460,6 +557,7 @@ def create_openai_jsonl(
         prompt_paths:list[str],
         *,
         model:str = DEFAULT_MODEL,
+        schema_version:int = 1,
         save:bool = True, save_as:str|None = None, 
         overwrite:bool = False,
         return_type:Literal['fname', 'path', 'data', None] = 'path'
@@ -471,6 +569,14 @@ def create_openai_jsonl(
     ----------
     prompt_paths : list[str]
         A list of paths to prompt text files to include in the jsonl. Each file should be a text file containing a prompt.
+    model : str, optional
+        The model to use for analysis. Defaults to 'gpt-5.1'.
+    schema_version : int, optional
+        The schema version to use for the response. Defaults to 1 (PromptResponseV1). Must be one of RESPONSE_SCHEMAS.
+    save : bool, optional
+        Whether to save the jsonl file. Defaults to True.
+    save_as : str | None, optional
+        The path where the jsonl file should be saved. If None, a unique filename will be generated based on the prompt contents and saved in the prompts folder of the term collection. Only has
     save_path : str | None, optional
         The path where the jsonl file should be saved. Defaults to None.
     overwrite : bool, optional
@@ -490,6 +596,8 @@ def create_openai_jsonl(
     # preliminary checks to ensure we're not doing work for nothing
     if return_type not in ['fname', 'path', 'data', None]:
         raise ValueError(f'return_type should be one of "fname", "data", or None. Got {return_type}')
+    if schema_version not in RESPONSE_SCHEMAS:
+        raise ValueError(f'schema_version should be one of {list(RESPONSE_SCHEMAS.keys())}. Got {schema_version}')
 
     if save:
         if save_as is None:
@@ -524,7 +632,9 @@ def create_openai_jsonl(
 
     # gather jsons in jsonl format
     data = []
-    schema = make_strict_schema(PromptResponse.model_json_schema())
+    need_term = schema_depends_on_term(schema_version)
+    if not need_term:
+        schema = make_strict_schema(get_schema(schema_version=schema_version).model_json_schema())
     term_collections = set()
     for file_path in prompt_paths:
         with open(file_path, 'r') as f:
@@ -534,6 +644,15 @@ def create_openai_jsonl(
         term_collections.add(term_coll)
         if len(term_collections) > 1:
             raise ValueError(f'Multiple TermCollections found in prompt_paths: {term_collections}. All prompts in a single batch must relate to the same TermCollection.')
+        
+        if need_term:
+            schema = make_strict_schema(
+                get_schema(
+                    schema_version=schema_version, 
+                    term=TermCollection.from_folder(term_coll)[term], 
+                    prompt_path=file_path
+                ).model_json_schema()
+            )
         data.append({
             'custom_id': prompt_id(Report(file_path), term),  # custom ID for OpenAI API
             'method': 'POST',
@@ -544,14 +663,14 @@ def create_openai_jsonl(
                 'response_format': {
                     'type': 'json_schema',
                     'json_schema': {
-                        'name': 'PromptResponse',
+                        'name': schema.__name__,
                         'schema': schema,
                         'strict': True
                     }
                 }
             }
         })
-    logger_llm.debug(f'JSONL DATA CREATED: {len(data)} records created from {len(prompt_paths)} file paths.')
+    logger_llm.debug(f'JSONL DATA CREATED: {len(data)} records created from {len(prompt_paths)} file paths. Schema version: {schema_version}.')
 
     # write jsonl file
     if save:
@@ -830,6 +949,21 @@ class Job:
         self.id = os.path.basename(prompt_jsonl_path).replace('.jsonl', '')
         self.info_path = os.path.join(os.path.dirname(prompt_jsonl_path), f'{self.id}-info.json')
 
+        # read schema version from first entry in jsonl - all prompts have the same version
+        with open(prompt_jsonl_path, 'r') as f:
+            first_line = f.readline()
+            if not first_line:
+                raise ValueError(f'Prompt jsonl {prompt_jsonl_path} is empty. Cannot create Job.')
+            try:
+                first_record = json.loads(first_line)
+            except json.JSONDecodeError as e:
+                raise ValueError(f'Prompt jsonl {prompt_jsonl_path} is not valid JSON. Cannot create Job. Error: {e}')
+            body = first_record.get('body') or {}
+            response_format = body.get('response_format') or {}
+            schema_info = response_format.get('json_schema') or {}
+            self.response_schema_version = int(schema_info.get('name', '').replace('PromptResponseV', '')[0]) if 'PromptResponseV' in schema_info.get('name', '') else 1
+        
+
         # caches, invalidated by _write_info / refresh
         self._info_cache = None
         self._info_mtime = None
@@ -887,9 +1021,15 @@ class Job:
         if not prompt_paths:
             raise ValueError('prompt_paths is empty. Cannot create a Job with no prompts.')
 
+        # infer schema version, and ensure all prompts are for the same schema
+        schema_versions = set(int(os.path.basename(fpath).split('_v')[1]) for fpath in prompt_paths)
+        if len(schema_versions) != 1:
+            raise ValueError('All prompt files must be for the same schema version. Got versions: ' + ', '.join(schema_versions))
+
         jsonl_path = create_openai_jsonl(
             prompt_paths=prompt_paths,
             model=model,
+            schema_version=schema_versions.pop(),  # only one val
             save=True, overwrite=overwrite,
             return_type='path'
         )
@@ -961,7 +1101,7 @@ class Job:
         Parameters
         ----------
         *others : Job
-            The job(s) to merge into this one. All must share this job's term collection.
+            The job(s) to merge into this one. All must share this job's term collection and response schema version.
         save_as : str or None, optional
             Where to write the merged jsonl. Defaults to a content-derived name in the term
             collection's prompts folder.
@@ -976,7 +1116,7 @@ class Job:
         Raises
         ------
         ValueError
-            If the jobs do not all share the same term collection.
+            If the jobs do not all share the same term collection and response schema version.
         ValueError
             If no other jobs are provided.
         ValueError
@@ -991,6 +1131,12 @@ class Job:
             raise ValueError(
                 f'Cannot merge jobs from different term collections: {sorted(term_folders)}. '
                 'All prompts in a job must relate to the same TermCollection.'
+            )
+        response_schema_versions = {job.response_schema_version for job in jobs}
+        if len(response_schema_versions) > 1:
+            raise ValueError(
+                f'Cannot merge jobs with different response schema versions: {sorted(response_schema_versions)}. '
+                'All prompts in a job must relate to the same response schema version.'
             )
 
         records = []
@@ -1065,6 +1211,7 @@ class Job:
         now = time.time()
         return {
             'schema_version': JOB_SCHEMA_VERSION,
+            'response_schema_version': self.response_schema_version,
             'id': self.id,
             'parent': self.prompt_jsonl_path,
             'n_prompts': self.n_prompts,

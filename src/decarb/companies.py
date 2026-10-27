@@ -28,6 +28,8 @@ REPORT_TYPES_LONG = {
     'sustainability-report': 'sustainability report'
 }
 
+assert REPORT_TYPES_SHORT.keys() == REPORT_TYPES_LONG.keys() == REPORT_TYPES, "REPORT_TYPES_SHORT and REPORT_TYPES_LONG must have the same keys as REPORT_TYPES"
+
 COMPANY_ALIASES = {
         'shell': 'Shell',
         'bp': 'BP',
@@ -263,7 +265,7 @@ class Report:
             return self.__str__()
         
     def __str__(self):
-        return f'Report(company={self.company.folder_name}, report_type={self.report_type}, report_name={self.report_name})'
+        return f'Report(company={self.company.folder_name}, report_type={self.report_type}, year={self.year}, report_name={self.report_name})'
 
     def __repr__(self):
         return self.__str__()
@@ -456,38 +458,30 @@ class Report:
         return [os.path.join(prompts_dir, f) for f in prompt_files]
     
 
-    def _prompt_path(self, terms: TermCollection | str, term: Term | str) -> str:
+    def _prompt_path(self, terms: TermCollection | str, term: Term | str, schema_version: int) -> str:
         '''The expected location of the prompt file for this report, term collection, and term alias. Does not check whether the file actually exists.'''
         if not isinstance(term, str):
             term = term.prompt_fname
         if not term.endswith('.txt'):
             term = term + '.txt'
+
+        term = term.replace('.txt.', f'_v{schema_version}.txt.')
         return os.path.join(self._prompts_dir(terms), f'{term}')
 
-    def prompt_path(self, terms: TermCollection | str, term: Term | str) -> str | None:
+    def prompt_path(self, terms: TermCollection | str, term: Term | str, schema_version: int) -> str | None:
         '''Get the path to the prompt file for this report, term collection, and term alias, if it exists. Otherwise, return None.'''
-        prompt_path = self._prompt_path(terms, term)
+        prompt_path = self._prompt_path(terms, term, schema_version)
         if not os.path.exists(prompt_path):
             return None
         return prompt_path
     
-    def prompt(self, terms: TermCollection | str, term: Term | str) -> str | None:
+    def prompt(self, terms: TermCollection | str, term: Term | str, schema_version: int) -> str | None:
         '''Get the content of the prompt file for this report, term collection, and term alias, if it exists. Otherwise, return None.'''
-        prompt_path = self.prompt_path(terms, term)
+        prompt_path = self.prompt_path(terms, term, schema_version)
         if prompt_path is None:
             return None
         return open(prompt_path).read()
     
-    def _prompts_jsonl_path(self, terms: TermCollection | str) -> str:
-        '''The expected location of the prompts jsonl file for this report and term collection. Does not check whether the file actually exists.'''
-        return os.path.join(self._prompts_dir(terms), 'prompts.jsonl')
-    
-    def prompts_jsonl_path(self, terms: TermCollection | str) -> str | None:
-        '''Get the path to the prompts jsonl file for this report and term collection, if it exists. Otherwise, return None.'''
-        prompts_jsonl_path = self._prompts_jsonl_path(terms)
-        if not os.path.exists(prompts_jsonl_path):
-            return None
-        return prompts_jsonl_path
             
 @dataclass
 class Company:
@@ -549,8 +543,39 @@ class Company:
 
     def __str__(self):
         return self.folder_name
+
+    def report(self, report_type: Literal['annual-report', 'sustainability-report'], year: int|str) -> Report:
+        '''
+        Get a Report object for this company, report type, and year.
+
+        Parameters
+        ----------
+        report_type : str
+            The type of report to get (e.g., "annual-report" or "sustainability-report"). 
+            Must be a valid report type from REPORT_TYPES.
+        year : int or str
+            The year of the report to get.
+
+        Returns
+        -------
+        Report
+            A Report object for this company, report type, and year.
+        
+        Raises
+        ------
+        ValueError
+            If the report_type is not valid, or if the expected folder for the report type and year does not exist.
+        '''
+        if report_type not in self.report_types:
+            raise ValueError(f'report_type should be one of {self.report_types}. Got {report_type}')
+        
+        report_folders = self.report_folders(report_type=report_type, years=[year])
+        if len(report_folders) == 0:
+            raise ValueError(f'No folder found for {report_type} reports of company {self.folder_name} for year {year} at expected location: {os.path.join(self.folder, report_type)}')
+        
+        return Report(path=report_folders[0])
     
-    def reports(self, *, report_type:str = 'all', errors:Literal['raise', 'ignore']='ignore') -> list[Report]:
+    def reports(self, *, report_type:str = 'all', years: list[int|str] | None = None, errors:Literal['raise', 'ignore']='ignore') -> list[Report]:
         '''
         Get a list of Report objects for this company and report type.
 
@@ -560,6 +585,9 @@ class Company:
             The type of report to get (e.g., "annual-report" or "sustainability-report"). 
             Must be a valid report type from REPORT_TYPES, or 'all' to get reports for all report types.
             Defaults to 'all'.
+        years : list[int|str] | None, optional
+            A list of years to filter the reports by. If None, all years are included.
+            Defaults to None.
         errors : {'raise', 'ignore'}, optional
             How to handle errors when creating Report objects (e.g., due to missing files).
             'raise' will raise the error and stop execution, while 'ignore' will log a
@@ -569,12 +597,17 @@ class Company:
         -------
         list[Report]
             A list of Report objects for this company and report type.
+        
+        Raises
+        ------
+        ValueError
+            If the report_type is not valid, or if the expected folder for the report type does not exist.
         '''
         if report_type not in self.report_types and report_type.lower() != 'all':
             raise ValueError(f'report_type should be one of {self.report_types}. Got {report_type}')
         
         out = []
-        for report_folder in self.report_folders(report_type=report_type):
+        for report_folder in self.report_folders(report_type=report_type, years=years):
             try:
                 out.append(Report(path=report_folder))
             except ValueError as e:
@@ -586,7 +619,7 @@ class Company:
                     raise ValueError(f'Invalid value for errors parameter: {errors}. Must be one of {["raise", "ignore"]}')
         return out
 
-    def report_folders(self, *, report_type: str = 'all') -> list[str]:
+    def report_folders(self, *, report_type: str = 'all', years: list[int|str] | None = None) -> list[str]:
         '''
         Full paths to all report folders for this company and report type. 
         Report type can be 'all' to get folders for all report types.
@@ -596,27 +629,48 @@ class Company:
         report_type : str
             The type of report to get folders for (e.g., "annual-report" or "sustainability-report"). 
             Must be a valid report type from REPORT_TYPES, or 'all' to get folders for all report types.
+        years : list[int|str] | None, optional
+            A list of years to filter the report folders by. If None, all years are included. Defaults to None.
 
         Returns
         -------
         list[str]
             A list of full paths to report folders for this company and report type.
+        
+        Raises
+        ------
+        ValueError
+            If the report_type is not valid, or if the expected folder for the report type does not exist.
         '''
         
         if report_type not in self.report_types:
             if report_type.lower() == 'all':
                 report_folders = []
                 for rt in self.report_types:
-                    report_folders.extend(self.report_folders(report_type=rt))
+                    report_folders.extend(self.report_folders(report_type=rt, years=years))
                 return report_folders
             raise ValueError(f'report_type should be one of {self.report_types}. Got {report_type}')
+
+        if years is not None:
+            if isinstance(years, int):
+                years = [years]
+            elif isinstance(years, str):
+                years = [int(years)]
+            elif isinstance(years, Iterable):
+                years = [int(year) for year in years]
+            else:
+                raise ValueError(f'years should be an int or an iterable of ints. Got {type(years)}')
         
         report_type_folder = os.path.join(self.folder, report_type)
         
         if not os.path.exists(report_type_folder):
             raise ValueError(f'No folder found for {report_type} reports of company {self.folder_name} at expected location: {report_type_folder}')
         
-        return [os.path.join(report_type_folder, fname) for fname in os.listdir(report_type_folder) if os.path.isdir(os.path.join(report_type_folder, fname))]
+        if years is not None:
+            report_folders = [os.path.join(report_type_folder, fname) for fname in os.listdir(report_type_folder) if os.path.isdir(os.path.join(report_type_folder, fname)) and any(fname.endswith(str(year)) for year in years)]
+        else:
+            report_folders = [os.path.join(report_type_folder, fname) for fname in os.listdir(report_type_folder) if os.path.isdir(os.path.join(report_type_folder, fname))]
+        return report_folders
 
     def __hash__(self):
         return hash(self.folder_name)

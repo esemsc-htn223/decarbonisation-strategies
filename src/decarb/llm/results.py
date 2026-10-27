@@ -4,7 +4,7 @@ import json
 
 from decarb.terms import TermCollection, TERMS_ALL
 from decarb.companies import CompanyCollection, COMPANIES_ALL
-from decarb.llm.prompt import PromptResponse
+from decarb.llm.schemas import RESPONSE_SCHEMAS, Action, TechnologyStance
 from decarb.util import logger_llm, resolve_path
 
 __all__ = ['to_df', 'DEFAULT_MISSING']
@@ -12,27 +12,83 @@ __all__ = ['to_df', 'DEFAULT_MISSING']
 
 
 DEFAULT_MISSING = {
-    'q1_sentiment': np.nan,
-    'q1_sentiment_quotes': [],
-    'q1_framing': pd.NA,
-    'q2_maturity': np.nan,
-    'q2_maturity_quotes': [],
-    'q3_stage': pd.NA,
-    'q3_stage_quotes': [],
-    'q4_commitments': [],
+    1: {
+        'q1_sentiment': np.nan,
+        'q1_sentiment_quotes': [],
+        'q1_framing': pd.NA,
+        'q2_maturity': np.nan,
+        'q2_maturity_quotes': [],
+        'q3_stage': pd.NA,
+        'q3_stage_quotes': [],
+        'q4_commitments': [],
+    },
+    2: {
+        'actions': [
+            {
+                "quotes": [],
+                "summary": pd.NA,
+                "project_name": pd.NA,
+                "action_type": pd.NA,
+                "technology_scope": pd.NA,
+                "technology_variants": [],
+                "company_role": [],
+                "stage": pd.NA,
+                "wording_strength": pd.NA,
+                "conditions": [],
+                "status": pd.NA,
+                "reasons": [],
+                "cited_events": [],
+                "quantities": [],
+                "partners": [],
+                "location": pd.NA,
+                "start_year": np.nan,
+                "start_month": np.nan,
+                "target_year": np.nan,
+                "timing_text": pd.NA
+            }
+        ],
+        'stance': {
+            'quotes': [],
+            'off_topic_extracts': [],
+            'technology_outlook': pd.NA,
+            'strategic_role': pd.NA,
+            'strategy_change': pd.NA,
+            'change_reasons': [],
+            'cited_events': [],
+        }
+    }
 }
 
-keys_in_prompt_response = set(PromptResponse.model_fields.keys())
-keys_in_default_missing = set(DEFAULT_MISSING.keys())
-if keys_in_prompt_response != keys_in_default_missing:
-    missing_in_default = keys_in_prompt_response - keys_in_default_missing
-    missing_in_prompt_response = keys_in_default_missing - keys_in_prompt_response
-    if missing_in_default:
-        logger_llm.warning(f'DEFAULT_MISSING MISSING FIELDS: {missing_in_default} from PromptResponse not found in DEFAULT_MISSING. Defaulting to None.')
-        for field in missing_in_default:
-            DEFAULT_MISSING[field] = None
-    if missing_in_prompt_response:
-        logger_llm.warning(f'DEFAULT_MISSING EXTRA FIELDS: {missing_in_prompt_response} in DEFAULT_MISSING not found in PromptResponse. They will be ignored.')
+for v, schema in RESPONSE_SCHEMAS.items():
+    keys_in_prompt_response = set(schema.model_fields.keys())
+    keys_in_default_missing = set(DEFAULT_MISSING[v].keys())
+    if keys_in_prompt_response != keys_in_default_missing:
+        missing_in_default = keys_in_prompt_response - keys_in_default_missing
+        missing_in_prompt_response = keys_in_default_missing - keys_in_prompt_response
+        if missing_in_default:
+            logger_llm.warning(f'DEFAULT_MISSING MISSING FIELDS: {missing_in_default} from PromptResponse not found in DEFAULT_MISSING. Defaulting to None.')
+            for field in missing_in_default:
+                DEFAULT_MISSING[field] = None
+        if missing_in_prompt_response:
+            logger_llm.warning(f'DEFAULT_MISSING EXTRA FIELDS: {missing_in_prompt_response} in DEFAULT_MISSING not found in PromptResponse. They will be ignored.')
+
+    if v == 2:
+        # check that the default values for nested fields are also correct
+        for name, nested_field in [('actions', Action), ('stance', TechnologyStance)]:
+            nested_keys_in_prompt_response = set(nested_field.model_fields.keys())
+            nested_keys_in_default_missing = set(DEFAULT_MISSING[v][nested_field].keys()) if isinstance(DEFAULT_MISSING[v][nested_field], dict) else set(DEFAULT_MISSING[v][nested_field][0].keys())
+            if nested_keys_in_prompt_response != nested_keys_in_default_missing:
+                missing_in_default = nested_keys_in_prompt_response - nested_keys_in_default_missing
+                missing_in_prompt_response = nested_keys_in_default_missing - nested_keys_in_prompt_response
+                if missing_in_default:
+                    logger_llm.warning(f'DEFAULT_MISSING MISSING NESTED FIELDS: {missing_in_default} from PromptResponse.{nested_field} not found in DEFAULT_MISSING. Defaulting to None.')
+                    for field in missing_in_default:
+                        DEFAULT_MISSING[v][nested_field][0][field] = None
+                if missing_in_prompt_response:
+                    logger_llm.warning(f'DEFAULT_MISSING EXTRA NESTED FIELDS: {missing_in_prompt_response} in DEFAULT_MISSING.{nested_field} not found in PromptResponse. They will be ignored.')
+
+
+
 
 def _get_out_jsonl_paths(in_jsonl_paths: list[str]|str) -> list[str]:
     '''
@@ -165,11 +221,12 @@ def _mark_missing(df: pd.DataFrame, terms:TermCollection, prompt_dict: dict, *,
     ], axis=0).sort_values(by=['company', 'report_type', 'year', 'term_alias'])
 
 def to_df(*,
-               job = None,
-               in_jsonl_paths: list[str]|str|None = None, out_jsonl_paths:list[str]|str|None = None,
-               terms: TermCollection = TERMS_ALL, cos: CompanyCollection = COMPANIES_ALL,
-               label_missing: bool = True, missing_report_values: dict = DEFAULT_MISSING, missing_term_values: dict = DEFAULT_MISSING,
-               fillna_values:dict|None = DEFAULT_MISSING) -> pd.DataFrame:
+    job = None,
+    in_jsonl_paths: list[str]|str|None = None, out_jsonl_paths:list[str]|str|None = None,
+    response_schema_version:int = None,
+    terms: TermCollection = TERMS_ALL, cos: CompanyCollection = COMPANIES_ALL,
+    label_missing: bool = True, missing_report_values: dict = DEFAULT_MISSING, missing_term_values: dict = DEFAULT_MISSING,
+    fillna_values:dict|None = DEFAULT_MISSING) -> pd.DataFrame:
     '''
     Return a dataframe showing the input prompt, and returned values for every prompt, labelled by company, report type, year, and term.
 
@@ -186,6 +243,8 @@ def to_df(*,
     out_jsonl_paths : list[str] | str | None
         Path(s) to the output JSONL file(s) containing the responses. If None, resolved from
         `in_jsonl_paths`.
+    response_schema_version : int, optional
+        The schema version to use for interpreting the responses. Must be provided if the path arguments are used. Default is 1.
     terms : TermCollection, optional
         The TermCollection used in the analysis. Default is `TERMS_ALL`.
     cos : CompanyCollection, optional
@@ -220,6 +279,11 @@ def to_df(*,
         jobs = [job] if not isinstance(job, (list, tuple, set)) else list(job)
         in_jsonl_paths = [j.input_path for j in jobs]
         out_jsonl_paths = []
+        response_schema_versions = {j.response_schema_version for j in jobs}
+        if len(response_schema_versions) > 1:
+            raise ValueError(f'Jobs have different response schema versions ({sorted(response_schema_versions)}). Build a dataframe per version.')
+        if response_schema_versions:
+            response_schema_version = response_schema_versions.pop()
         for j in jobs:
             for path in j.output_paths:
                 if path not in out_jsonl_paths:
@@ -232,6 +296,13 @@ def to_df(*,
             terms = jobs[0].terms
     elif in_jsonl_paths is None:
         raise ValueError('Provide either job or in_jsonl_paths.')
+    
+    if response_schema_version is None:
+        raise ValueError('Provide response_schema_version when not passing a job.')
+    elif response_schema_version == 2:
+        raise NotImplementedError('Response schema version 2 is not yet supported in to_df().')
+    elif response_schema_version not in RESPONSE_SCHEMAS:
+        raise ValueError(f'Unknown response schema version {response_schema_version}. Must be one of {sorted(RESPONSE_SCHEMAS.keys())}.')
 
     if out_jsonl_paths is None:
         out_jsonl_paths = _get_out_jsonl_paths(in_jsonl_paths)
